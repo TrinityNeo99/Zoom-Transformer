@@ -1,4 +1,8 @@
 #!/usr/bin/env python
+
+#  Copyright (c) 2024. IPCRC, Lab. Jiangnig Wei
+#  All rights reserved
+
 import argparse
 import inspect
 import os
@@ -19,10 +23,11 @@ from tensorboardX import SummaryWriter
 from torch.autograd import Variable
 from torch.optim.lr_scheduler import _LRScheduler
 from tqdm import tqdm
+import wandb
 
-from thop import clever_format
-from thop import profile
 
+# from thop import clever_format
+# from thop import profile
 
 
 class GradualWarmupScheduler(_LRScheduler):
@@ -241,13 +246,11 @@ class Processor():
         output_device = self.arg.device[0] if type(self.arg.device) is list else self.arg.device
         self.output_device = output_device
         Model = import_class(self.arg.model)
-        
 
         shutil.copy2(inspect.getfile(Model), self.arg.work_dir)
         print(Model)
         self.model = Model(**self.arg.model_args).cuda(output_device)
         print(self.model)
-
 
         self.loss = nn.CrossEntropyLoss().cuda(output_device)
 
@@ -414,6 +417,8 @@ class Processor():
             self.train_writer.add_scalar('loss_l1', l1, self.global_step)
             # self.train_writer.add_scalar('batch_time', process.iterable.last_duration, self.global_step)
 
+            wandb.log({"train_total_loss": loss})
+            wandb.log({f"train_acc_top_1": 100 * acc})
             # statistics
             self.lr = self.optimizer.param_groups[0]['lr']
             self.train_writer.add_scalar('lr', self.lr, self.global_step)
@@ -499,6 +504,8 @@ class Processor():
                 self.val_writer.add_scalar('loss_l1', l1, self.global_step)
                 self.val_writer.add_scalar('acc', accuracy, self.global_step)
 
+            wandb.log({"eval_total_loss": loss})
+            wandb.log({"Eval Best top-1 acc": 100 * self.best_acc})
             score_dict = dict(
                 zip(self.data_loader[ln].dataset.sample_name, score))
             self.print_log('\tMean {} loss of {} batches: {}.'.format(
@@ -506,6 +513,7 @@ class Processor():
             for k in self.arg.show_topk:
                 self.print_log('\tTop{}: {:.2f}%'.format(
                     k, 100 * self.data_loader[ln].dataset.top_k(score, k)))
+                wandb.log({f"eval_acc_top_{k}": 100 * self.data_loader[ln].dataset.top_k(score, k)})
 
             if save_score:
                 with open('{}/epoch{}_{}_score.pkl'.format(
@@ -517,6 +525,7 @@ class Processor():
             self.print_log('Parameters:\n{}\n'.format(str(vars(self.arg))))
             self.global_step = self.arg.start_epoch * len(self.data_loader['train']) / self.arg.batch_size
             for epoch in range(self.arg.start_epoch, self.arg.num_epoch):
+                wandb.log({"epoch": epoch})
                 if self.lr < 1e-4:
                     break
                 save_model = ((epoch + 1) % self.arg.save_interval == 0) or (
@@ -563,6 +572,18 @@ def import_class(name):
     return mod
 
 
+def wandb_init(args):
+    wandb.login(key="bc22e6220c728740eef0df1af4695d3bd63ec155", force=True)
+    wandb.init(
+        # set the wandb project where this run will be logged
+        project="sports_action_recognition",
+        # name="ASE_GCN_baseline",
+        name="Zoom_Transformer_baseline",
+        # track hyperparameters and run metadata
+        config=args
+    )
+
+
 if __name__ == '__main__':
     parser = get_parser()
 
@@ -570,7 +591,7 @@ if __name__ == '__main__':
     p = parser.parse_args()
     if p.config is not None:
         with open(p.config, 'r') as f:
-            default_arg = yaml.load(f)
+            default_arg = yaml.safe_load(f)
         key = vars(p).keys()
         for k in default_arg.keys():
             if k not in key:
@@ -580,5 +601,6 @@ if __name__ == '__main__':
 
     arg = parser.parse_args()
     init_seed(0)
+    wandb_init(args=arg)
     processor = Processor(arg)
     processor.start()

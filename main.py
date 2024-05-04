@@ -9,6 +9,7 @@ import os
 import pickle
 import random
 import shutil
+import sys
 import time
 from collections import OrderedDict
 
@@ -24,6 +25,9 @@ from torch.autograd import Variable
 from torch.optim.lr_scheduler import _LRScheduler
 from tqdm import tqdm
 import wandb
+
+sys.path.append("../")
+from Evaluate.evaluate import generate_confusion_matrix
 
 
 # from thop import clever_format
@@ -506,6 +510,9 @@ class Processor():
 
             wandb.log({"eval_total_loss": loss})
             wandb.log({"Eval Best top-1 acc": 100 * self.best_acc})
+            predicted_labels = score.argsort()[:, -1]
+            generate_confusion_matrix(predicted_labels, self.data_loader[ln].dataset.label, dataset="p2a-14",
+                                      output_dir=self.arg.work_dir)
             score_dict = dict(
                 zip(self.data_loader[ln].dataset.sample_name, score))
             self.print_log('\tMean {} loss of {} batches: {}.'.format(

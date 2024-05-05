@@ -390,6 +390,7 @@ class Processor():
                         value.requires_grad = False
                         # print(key + '-not require grad')
         for batch_idx, (data, label, index) in enumerate(process):
+            # print(data.shape)
             self.global_step += 1
             # get data
             data = Variable(data.float().cuda(self.output_device), requires_grad=False)

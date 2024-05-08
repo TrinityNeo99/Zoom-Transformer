@@ -116,11 +116,14 @@ class my_simple_gcn_unit(nn.Module):
     def forward(self, x):
         # batchsize, channel, t, node_num
         N, C, T, V = x.size()
-        x = rearrange(x, 'n c t v  -> (n t v) c')
-        x += self.feature_embedding
-        x = rearrange(x, '(n t v) c -> n c t v', n=N, t=T, v=V)
-        # embedding = x[:, (self.angular_channels + 1) * (-1): -1, :, :] + self.angular_embedding
-        # x[:, (self.angular_channels + 1) * (-1): -1, :, :] = embedding
+
+        ## feature parameter embedding
+        # x = rearrange(x, 'n c t v  -> (n t v) c')
+        # x += self.feature_embedding
+        # x = rearrange(x, '(n t v) c -> n c t v', n=N, t=T, v=V)
+        # # embedding = x[:, (self.angular_channels + 1) * (-1): -1, :, :] + self.angular_embedding
+        # # x[:, (self.angular_channels + 1) * (-1): -1, :, :] = embedding
+
         A = self.A.cuda(x.get_device())  # A V*V
         support = torch.einsum('vu,nctu->nctv', A, x)  # N, C, T, V
         # support = self.conv_1(support)
@@ -344,7 +347,7 @@ class TCN_STRANSF_unit(nn.Module):
         B, C, T, V = x.size()
         tx = x.permute(0, 2, 3, 1).contiguous().view(B * T, V, C)
         if mask == None:
-            tx = self.transf1(tx, self.mask)
+            tx = self.transf1(tx)
         else:
             tx = self.transf1(tx, mask)
         tx = tx.view(B, T, V, C).permute(0, 3, 1, 2).contiguous()
@@ -354,13 +357,15 @@ class TCN_STRANSF_unit(nn.Module):
 
 class Temporal_Spatial_Trans_unit(nn.Module):
     def __init__(self, in_channels, out_channels, heads=3, stride=1, residual=True, dropout=0.1, mask=None,
+                 num_frame=100,
                  mask_grad=True):
         super(Temporal_Spatial_Trans_unit, self).__init__()
         self.transf1 = Transformer(dim=in_channels, depth=1, heads=heads, mlp_dim=in_channels, dropout=dropout)
-        self.temporal_trans = Transformer(dim=in_channels, depth=1, heads=heads, mlp_dim=out_channels, dropout=dropout)
+        self.temporal_trans = Transformer(dim=in_channels, depth=1, heads=heads, mlp_dim=in_channels, dropout=dropout)
         self.tcn1 = unit_tcn_m(in_channels, out_channels, stride=stride)
         self.relu = nn.ReLU()
         self.out_channels = out_channels
+        self.temporal_embedding = nn.Parameter(torch.zeros(1, num_frame, in_channels))
         if not residual:
             self.residual = lambda x: 0
 
@@ -377,15 +382,16 @@ class Temporal_Spatial_Trans_unit(nn.Module):
         B, C, T, V = x.size()
         tx = x.permute(0, 2, 3, 1).contiguous().view(B * T, V, C)
         if mask == None:
-            tx = self.transf1(tx, self.mask)
+            tx = self.transf1(tx)
         else:
             tx = self.transf1(tx, mask)
-        sx = rearrange(tx, "(b t) v c -> (b v) t c")
+        sx = rearrange(tx, "(b t) v c -> (b v) t c", t=T)
+        # print(sx.shape, self.temporal_embedding.shape)
+        sx += self.temporal_embedding
         sx = self.temporal_trans(sx)
         stx = rearrange(sx, "(b v) t c -> b c t v", v=V)
         # tx = tx.view(B, T, V, C).permute(0, 3, 1, 2).contiguous() # tx: B
-        # x = self.tcn1(tx) + self.residual(x)
-        stx += self.residual(x)
+        x = self.tcn1(stx) + self.residual(x)
         return self.relu(x)
 
 
@@ -404,12 +410,56 @@ class ZiT(nn.Module):
 
         self.A = torch.from_numpy(self.graph.A[0].astype(np.float32))
         self.l1 = TCN_GCN_unit(in_channels, 48, self.graph.A[0], residual=False)  # only contain A[0] (adjacency matrix)
-        self.l2 = Temporal_Spatial_Trans_unit(48, 48, heads=num_head, mask=self.A, mask_grad=False)
-        self.l3 = Temporal_Spatial_Trans_unit(48, 48, heads=num_head, mask=self.A, mask_grad=False)
+        self.l2 = TCN_STRANSF_unit(48, 48, heads=num_head, mask=self.A, mask_grad=False)
+        self.l3 = TCN_STRANSF_unit(48, 48, heads=num_head, mask=self.A, mask_grad=False)
         self.l4 = TCN_STRANSF_unit(48, 96, heads=num_head, stride=2, mask=self.A, mask_grad=True)
         self.l5 = TCN_STRANSF_unit(96, 96, heads=num_head, mask=self.A, mask_grad=True)
         self.l6 = TCN_STRANSF_unit(96, 192, heads=num_head, stride=2, mask=self.A, mask_grad=True)
         self.l7 = TCN_STRANSF_unit(192, 192, heads=num_head, mask=self.A, mask_grad=True)
+
+    def forward(self, x):
+        N, C, T, V, M = x.size()
+        x = x.permute(0, 4, 3, 1, 2).contiguous().view(N, M * V * C, T)
+        x = self.data_bn(x)
+        x = x.view(N, M, V, C, T).permute(0, 1, 3, 4, 2).contiguous().view(N * M, C, T, V)  # 这样就达到了共享参数的目的
+
+        x = self.l1(x)
+        x = self.l2(x)
+        x = self.l3(x)
+        x = self.l4(x)
+        x = self.l5(x)
+        x = self.l6(x)
+        x = self.l7(x)
+
+        B, C_, T_, V_ = x.size()
+        x = x.view(N, M, C_, T_, V_).mean(4)
+        x = x.permute(0, 2, 3, 1).contiguous()
+
+        return x
+
+
+class myZiT(nn.Module):
+    def __init__(self, in_channels=3, num_person=5, num_point=18, num_head=6, graph=None, graph_args=dict()):
+        super(myZiT, self).__init__()
+        self.data_bn = nn.BatchNorm1d(num_person * in_channels * num_point)
+        bn_init(self.data_bn, 1)
+        self.heads = num_head
+
+        if graph is None:
+            raise ValueError()
+        else:
+            Graph = import_class(graph)
+            self.graph = Graph(**graph_args)
+
+        self.A = torch.from_numpy(self.graph.A[0].astype(np.float32))
+        self.l1 = TCN_GCN_unit(in_channels, 48, self.graph.A[0], residual=False)  # only contain A[0] (adjacency matrix)
+        self.l2 = Temporal_Spatial_Trans_unit(48, 48, heads=num_head, mask=None, mask_grad=False)
+        self.l3 = Temporal_Spatial_Trans_unit(48, 48, heads=num_head, mask=None, mask_grad=False)
+        self.l4 = Temporal_Spatial_Trans_unit(48, 96, heads=num_head, stride=2, mask=None, mask_grad=True)
+        self.l5 = Temporal_Spatial_Trans_unit(96, 96, heads=num_head, mask=None, mask_grad=True, num_frame=50)
+        self.l6 = Temporal_Spatial_Trans_unit(96, 192, heads=num_head, stride=2, mask=None, mask_grad=True,
+                                              num_frame=50)
+        self.l7 = Temporal_Spatial_Trans_unit(192, 192, heads=num_head, mask=None, mask_grad=True, num_frame=25)
 
     def forward(self, x):
         N, C, T, V, M = x.size()
@@ -472,8 +522,8 @@ class Model(nn.Module):
                  graph_args=dict()):
         super(Model, self).__init__()
 
-        self.body_transf = ZiT(in_channels=in_channels, num_person=num_person, num_point=num_point, num_head=num_head,
-                               graph=graph, graph_args=graph_args)
+        self.body_transf = myZiT(in_channels=in_channels, num_person=num_person, num_point=num_point, num_head=num_head,
+                                 graph=graph, graph_args=graph_args)
         self.group_transf = ZoT(num_class=num_class, num_head=num_head)
 
         self.angular_feature = Angular_feature()

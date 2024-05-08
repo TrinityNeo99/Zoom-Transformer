@@ -256,6 +256,8 @@ class Processor():
         self.model = Model(**self.arg.model_args).cuda(output_device)
         print(self.model)
 
+        # add weighted loss
+        # weights = torch.FloatTensor([1.0, 1.0, 1.0, 3.0, 3.0, 1.0, 3.0, 3.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0])
         self.loss = nn.CrossEntropyLoss().cuda(output_device)
 
         if self.arg.weights:
@@ -392,9 +394,12 @@ class Processor():
         for batch_idx, (data, label, index) in enumerate(process):
             # print(data.shape)
             self.global_step += 1
-            # get data
-            data = Variable(data.float().cuda(self.output_device), requires_grad=False)
-            label = Variable(label.long().cuda(self.output_device), requires_grad=False)
+            # # get data
+            # data = Variable(data.float().cuda(self.output_device), requires_grad=False)
+            # label = Variable(label.long().cuda(self.output_device), requires_grad=False)
+            with torch.no_grad():
+                data = data.float().cuda(self.output_device)
+                label = label.long().cuda(self.output_device)
             timer['dataloader'] += self.split_time()
 
             # forward
@@ -502,6 +507,9 @@ class Processor():
             accuracy = self.data_loader[ln].dataset.top_k(score, 1)
             if accuracy > self.best_acc:
                 self.best_acc = accuracy
+                predicted_labels = score.argsort()[:, -1]
+                generate_confusion_matrix(predicted_labels, self.data_loader[ln].dataset.label, dataset="p2a-14",
+                                          output_dir=self.arg.work_dir)
             # self.lr_scheduler.step(loss)
             print('Accuracy: ', accuracy, ' model: ', self.arg.model_saved_name)
             if self.arg.phase == 'train':
@@ -511,9 +519,7 @@ class Processor():
 
             wandb.log({"eval_total_loss": loss})
             wandb.log({"Eval Best top-1 acc": 100 * self.best_acc})
-            predicted_labels = score.argsort()[:, -1]
-            generate_confusion_matrix(predicted_labels, self.data_loader[ln].dataset.label, dataset="p2a-14",
-                                      output_dir=self.arg.work_dir)
+
             score_dict = dict(
                 zip(self.data_loader[ln].dataset.sample_name, score))
             self.print_log('\tMean {} loss of {} batches: {}.'.format(

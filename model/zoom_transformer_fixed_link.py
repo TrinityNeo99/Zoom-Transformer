@@ -8,7 +8,6 @@ import torch
 import torch.nn as nn
 from torch.autograd import Variable
 import torch.nn.functional as F
-from model.angular_feature import Angular_feature
 
 
 def import_class(name):
@@ -95,45 +94,6 @@ class unit_tcn_m(nn.Module):
         return x
 
 
-class my_simple_gcn_unit(nn.Module):
-    def __init__(self, in_channels, out_channels, A, angular_channels=9, T=100, V=17):
-        super(my_simple_gcn_unit, self).__init__()
-        self.angular_channels = angular_channels
-        self.angular_embedding = nn.Parameter(torch.zeros(1, angular_channels, T, V))
-        self.feature_embedding = nn.Parameter(torch.zeros(1, in_channels))
-
-        self.A = Variable(torch.from_numpy(A.astype(np.float32)), requires_grad=False)
-        self.PA = nn.Parameter(torch.from_numpy(A.astype(np.float32)))
-        self.inter_channels = in_channels * 2  # 48
-        self.conv_1 = nn.Conv2d(in_channels, self.inter_channels, 1)
-        self.conv_2 = nn.Conv2d(self.inter_channels, self.inter_channels, 1)
-        self.conv_3 = nn.Conv2d(self.inter_channels, out_channels, 1)
-        self.conv = nn.Conv2d(in_channels, out_channels, 1)
-        self.bn = nn.BatchNorm2d(out_channels)
-        self.soft = nn.Softmax(-2)
-        self.relu = nn.ReLU()
-
-    def forward(self, x):
-        # batchsize, channel, t, node_num
-        N, C, T, V = x.size()
-        x = rearrange(x, 'n c t v  -> (n t v) c')
-        x += self.feature_embedding
-        x = rearrange(x, '(n t v) c -> n c t v', n=N, t=T, v=V)
-        # embedding = x[:, (self.angular_channels + 1) * (-1): -1, :, :] + self.angular_embedding
-        # x[:, (self.angular_channels + 1) * (-1): -1, :, :] = embedding
-        A = self.A.cuda(x.get_device())  # A V*V
-        support = torch.einsum('vu,nctu->nctv', A, x)  # N, C, T, V
-        # support = self.conv_1(support)
-        # support = self.relu(support)
-        # support = self.conv_2(support)
-        # support = self.relu(support)
-        # support = self.conv_3(support)
-        # support = self.relu(support)
-        support = self.conv(x)
-        support = self.relu(support)
-        return self.bn(support)
-
-
 class unit_gcn(nn.Module):
     def __init__(self, in_channels, out_channels, A, coff_embedding=4, num_subset=3):
         super(unit_gcn, self).__init__()
@@ -181,9 +141,9 @@ class unit_gcn(nn.Module):
         A = A + self.PA
 
         y = None
-        for i in range(self.num_subset):  # N V C T
-            A1 = self.conv_a[i](x).permute(0, 3, 1, 2).contiguous().view(N, V, self.inter_c * T)  # N V ic*T
-            A2 = self.conv_b[i](x).view(N, self.inter_c * T, V)  # N ic*T V
+        for i in range(self.num_subset):
+            A1 = self.conv_a[i](x).permute(0, 3, 1, 2).contiguous().view(N, V, self.inter_c * T)
+            A2 = self.conv_b[i](x).view(N, self.inter_c * T, V)
             A1 = self.soft(torch.matmul(A1, A2) / A1.size(-1))  # N V V
             A1 = A1 + A[i]
             A2 = x.view(N, C * T, V)
@@ -199,8 +159,7 @@ class TCN_GCN_unit(nn.Module):
 
     def __init__(self, in_channels, out_channels, A, stride=1, residual=True):
         super(TCN_GCN_unit, self).__init__()
-        # self.gcn1 = unit_gcn(in_channels, out_channels, A)
-        self.gcn1 = my_simple_gcn_unit(in_channels, out_channels, A)
+        self.gcn1 = unit_gcn(in_channels, out_channels, A)
         self.tcn1 = unit_tcn_m(out_channels, out_channels, stride=stride)
         self.relu = nn.ReLU()
         if not residual:
@@ -281,11 +240,11 @@ class Attention(nn.Module):
 
         dots = torch.einsum('bhid,bhjd->bhij', q, k) * self.scale
 
+        attn = dots.softmax(dim=-1)  # follow the softmax,q,d,v equation in the paper
+
         if mask is not None:
             assert mask.shape[-1] == dots.shape[-1], 'mask has incorrect dimensions'
-            # dots = (dots + mask) * 0.5
-
-        attn = dots.softmax(dim=-1)  # follow the softmax,q,d,v equation in the paper
+            dots = (dots + mask) * 0.5
 
         out = torch.einsum('bhij,bhjd->bhid', attn, v)  # product of v times whatever inside softmax
         out = rearrange(out, 'b h n d -> b n (h d)')  # concat heads into one matrix, ready for next encoder block
@@ -324,7 +283,6 @@ class TCN_STRANSF_unit(nn.Module):
                  mask_grad=True):
         super(TCN_STRANSF_unit, self).__init__()
         self.transf1 = Transformer(dim=in_channels, depth=1, heads=heads, mlp_dim=in_channels, dropout=dropout)
-        # self.temporal_trans = Transformer(dim=in_channels, depth=1, heads=heads, mlp_dim=in_channels, dropout=dropout)
         self.tcn1 = unit_tcn_m(in_channels, out_channels, stride=stride)
         self.relu = nn.ReLU()
         self.out_channels = out_channels
@@ -348,44 +306,8 @@ class TCN_STRANSF_unit(nn.Module):
         else:
             tx = self.transf1(tx, mask)
         tx = tx.view(B, T, V, C).permute(0, 3, 1, 2).contiguous()
+
         x = self.tcn1(tx) + self.residual(x)
-        return self.relu(x)
-
-
-class Temporal_Spatial_Trans_unit(nn.Module):
-    def __init__(self, in_channels, out_channels, heads=3, stride=1, residual=True, dropout=0.1, mask=None,
-                 mask_grad=True):
-        super(Temporal_Spatial_Trans_unit, self).__init__()
-        self.transf1 = Transformer(dim=in_channels, depth=1, heads=heads, mlp_dim=in_channels, dropout=dropout)
-        self.temporal_trans = Transformer(dim=in_channels, depth=1, heads=heads, mlp_dim=out_channels, dropout=dropout)
-        self.tcn1 = unit_tcn_m(in_channels, out_channels, stride=stride)
-        self.relu = nn.ReLU()
-        self.out_channels = out_channels
-        if not residual:
-            self.residual = lambda x: 0
-
-        elif (in_channels == out_channels) and (stride == 1):
-            self.residual = lambda x: x
-
-        else:
-            self.residual = unit_tcn(in_channels, out_channels, kernel_size=1, stride=stride)
-
-        if mask != None:
-            self.mask = nn.Parameter(mask, requires_grad=mask_grad)
-
-    def forward(self, x, mask=None):
-        B, C, T, V = x.size()
-        tx = x.permute(0, 2, 3, 1).contiguous().view(B * T, V, C)
-        if mask == None:
-            tx = self.transf1(tx, self.mask)
-        else:
-            tx = self.transf1(tx, mask)
-        sx = rearrange(tx, "(b t) v c -> (b v) t c")
-        sx = self.temporal_trans(sx)
-        stx = rearrange(sx, "(b v) t c -> b c t v", v=V)
-        # tx = tx.view(B, T, V, C).permute(0, 3, 1, 2).contiguous() # tx: B
-        # x = self.tcn1(tx) + self.residual(x)
-        stx += self.residual(x)
         return self.relu(x)
 
 
@@ -403,9 +325,9 @@ class ZiT(nn.Module):
             self.graph = Graph(**graph_args)
 
         self.A = torch.from_numpy(self.graph.A[0].astype(np.float32))
-        self.l1 = TCN_GCN_unit(in_channels, 48, self.graph.A[0], residual=False)  # only contain A[0] (adjacency matrix)
-        self.l2 = Temporal_Spatial_Trans_unit(48, 48, heads=num_head, mask=self.A, mask_grad=False)
-        self.l3 = Temporal_Spatial_Trans_unit(48, 48, heads=num_head, mask=self.A, mask_grad=False)
+        self.l1 = TCN_GCN_unit(3, 48, self.graph.A, residual=False)
+        self.l2 = TCN_STRANSF_unit(48, 48, heads=num_head, mask=self.A, mask_grad=False)
+        self.l3 = TCN_STRANSF_unit(48, 48, heads=num_head, mask=self.A, mask_grad=False)
         self.l4 = TCN_STRANSF_unit(48, 96, heads=num_head, stride=2, mask=self.A, mask_grad=True)
         self.l5 = TCN_STRANSF_unit(96, 96, heads=num_head, mask=self.A, mask_grad=True)
         self.l6 = TCN_STRANSF_unit(96, 192, heads=num_head, stride=2, mask=self.A, mask_grad=True)
@@ -476,14 +398,7 @@ class Model(nn.Module):
                                graph=graph, graph_args=graph_args)
         self.group_transf = ZoT(num_class=num_class, num_head=num_head)
 
-        self.angular_feature = Angular_feature()
-
     def forward(self, x):
-        # print("forward", x.shape)
-        x = self.angular_feature.preprocessing_pingpong_coco(
-            x)  # add 9 channels with original 3 channels, total 12 channels.
-        # x = self.angular_feature.preprocessing_pingpong_coco_upper_body(
-        #     x)  # add 9 channels with original 3 channels, total 12 channels.
         x = self.body_transf(x)
         x = self.group_transf(x)
 

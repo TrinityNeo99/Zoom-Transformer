@@ -4,3 +4,4 @@
 from . import tools
 # from . import kinetics
 from . import volleyball
+from . import pingpong

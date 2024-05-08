@@ -25,6 +25,7 @@ from torch.autograd import Variable
 from torch.optim.lr_scheduler import _LRScheduler
 from tqdm import tqdm
 import wandb
+import math
 
 sys.path.append("../")
 from Evaluate.evaluate import generate_confusion_matrix
@@ -209,11 +210,12 @@ class Processor():
             if not arg.train_feeder_args['debug']:
                 if os.path.isdir(arg.model_saved_name):
                     print('log_dir: ', arg.model_saved_name, 'already exist')
-                    answer = input('delete it? y/n:')
+                    # answer = input('delete it? y/n:')
+                    answer = 'y'
                     if answer == 'y':
                         shutil.rmtree(arg.model_saved_name)
                         print('Dir removed: ', arg.model_saved_name)
-                        input('Refresh the website of tensorboard by pressing any keys')
+                        # input('Refresh the website of tensorboard by pressing any keys')
                     else:
                         print('Dir not removed: ', arg.model_saved_name)
                 self.train_writer = SummaryWriter(os.path.join(arg.model_saved_name, 'train'), 'train')
@@ -411,7 +413,10 @@ class Processor():
                 l1 = l1.mean()
             else:
                 l1 = 0
-            loss = self.loss(output, label) + l1
+            loss = self.loss(output + 1e-8, label) + l1
+            if math.isnan(loss):
+                print(loss)
+                print(output)
 
             # backward
             self.optimizer.zero_grad()

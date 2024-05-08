@@ -387,11 +387,20 @@ class Temporal_Spatial_Trans_unit(nn.Module):
             tx = self.transf1(tx, mask)
         sx = rearrange(tx, "(b t) v c -> (b v) t c", t=T)
         # print(sx.shape, self.temporal_embedding.shape)
-        sx += self.temporal_embedding
+        if torch.isnan(sx).any():
+            print("before_transformer sx: ", sx.shape)
+            print(sx)
+            exit(-1)
+        # sx += self.temporal_embedding  # 获取可以做一个sin的编码
         sx = self.temporal_trans(sx)
+        if torch.isnan(sx).any():
+            print("after_transformer sx: ", sx.shape)
+            print(sx)
         stx = rearrange(sx, "(b v) t c -> b c t v", v=V)
+
         # tx = tx.view(B, T, V, C).permute(0, 3, 1, 2).contiguous() # tx: B
         x = self.tcn1(stx) + self.residual(x)
+        # x = stx + self.residual(x)
         return self.relu(x)
 
 

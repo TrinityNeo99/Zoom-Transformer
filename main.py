@@ -26,6 +26,7 @@ from torch.optim.lr_scheduler import _LRScheduler
 from tqdm import tqdm
 import wandb
 import math
+from datetime import datetime
 
 sys.path.append("../")
 from Evaluate.evaluate import generate_confusion_matrix
@@ -222,12 +223,14 @@ class Processor():
                 self.val_writer = SummaryWriter(os.path.join(arg.model_saved_name, 'val'), 'val')
             else:
                 self.train_writer = self.val_writer = SummaryWriter(os.path.join(arg.model_saved_name, 'test'), 'test')
+
         self.global_step = 0
         self.load_model()
         self.load_optimizer()
         self.load_data()
         self.lr = self.arg.base_lr
         self.best_acc = 0
+        self.best_acc5 = 0
 
     def load_data(self):
         Feeder = import_class(self.arg.feeder)
@@ -432,10 +435,9 @@ class Processor():
             self.train_writer.add_scalar('loss_l1', l1, self.global_step)
             # self.train_writer.add_scalar('batch_time', process.iterable.last_duration, self.global_step)
 
-            wandb.log({"train_total_loss": loss})
-            wandb.log({f"train_acc_top_1": 100 * acc})
             # statistics
             self.lr = self.optimizer.param_groups[0]['lr']
+
             self.train_writer.add_scalar('lr', self.lr, self.global_step)
             # if self.global_step % self.arg.log_interval == 0:
             #     self.print_log(
@@ -454,12 +456,15 @@ class Processor():
             '\tTime consumption: [Data]{dataloader}, [Network]{model}'.format(
                 **proportion))
 
+        wandb.log({"train_total_loss": np.mean(loss_value), "epoch": epoch})
+        wandb.log({f"train_acc_top_1": 100 * acc, "epoch": epoch})
+        wandb.log({"runing_lr": self.lr, "epoch": epoch})
+
         if save_model:
             state_dict = self.model.state_dict()
             weights = OrderedDict([[k.split('module.')[-1],
                                     v.cpu()] for k, v in state_dict.items()])
-
-            torch.save(weights, self.arg.model_saved_name + '-' + str(epoch) + '-' + str(int(self.global_step)) + '.pt')
+            torch.save(weights, os.path.join(self.arg.work_dir, self.arg.model_saved_name + '-' + str(epoch) + '.pt'))
 
     def eval(self, epoch, save_score=False, loader_name=['test'], wrong_file=None, result_file=None):
         if wrong_file is not None:
@@ -510,11 +515,15 @@ class Processor():
             score = np.concatenate(score_frag)
             loss = np.mean(loss_value)
             accuracy = self.data_loader[ln].dataset.top_k(score, 1)
+            accuracy_top5 = self.data_loader[ln].dataset.top_k(score, 5)
             if accuracy > self.best_acc:
                 self.best_acc = accuracy
                 predicted_labels = score.argsort()[:, -1]
                 generate_confusion_matrix(predicted_labels, self.data_loader[ln].dataset.label, dataset="p2a-14",
-                                          output_dir=self.arg.work_dir)
+                                          output_dir=self.arg.work_dir, epoch=epoch)
+            if accuracy_top5 > self.best_acc5:
+                self.best_acc5 = accuracy_top5
+
             # self.lr_scheduler.step(loss)
             print('Accuracy: ', accuracy, ' model: ', self.arg.model_saved_name)
             if self.arg.phase == 'train':
@@ -522,8 +531,9 @@ class Processor():
                 self.val_writer.add_scalar('loss_l1', l1, self.global_step)
                 self.val_writer.add_scalar('acc', accuracy, self.global_step)
 
-            wandb.log({"eval_total_loss": loss})
-            wandb.log({"Eval Best top-1 acc": 100 * self.best_acc})
+            wandb.log({"eval_total_loss": loss, "epoch": epoch})
+            wandb.log({"Eval Best top-1 acc": 100 * self.best_acc, "epoch": epoch})
+            wandb.log({"Eval Best top-5 acc": 100 * self.best_acc5, "epoch": epoch})
 
             score_dict = dict(
                 zip(self.data_loader[ln].dataset.sample_name, score))
@@ -532,7 +542,7 @@ class Processor():
             for k in self.arg.show_topk:
                 self.print_log('\tTop{}: {:.2f}%'.format(
                     k, 100 * self.data_loader[ln].dataset.top_k(score, k)))
-                wandb.log({f"eval_acc_top_{k}": 100 * self.data_loader[ln].dataset.top_k(score, k)})
+                wandb.log({f"eval_acc_top_{k}": 100 * self.data_loader[ln].dataset.top_k(score, k), "epoch": epoch})
 
             if save_score:
                 with open('{}/epoch{}_{}_score.pkl'.format(
@@ -546,6 +556,7 @@ class Processor():
             for epoch in range(self.arg.start_epoch, self.arg.num_epoch):
                 wandb.log({"epoch": epoch})
                 if self.lr < 1e-4:
+                    print("self.lr is too small: ", self.lr)
                     break
                 save_model = ((epoch + 1) % self.arg.save_interval == 0) or (
                         epoch + 1 == self.arg.num_epoch)
@@ -619,7 +630,13 @@ if __name__ == '__main__':
         parser.set_defaults(**default_arg)
 
     arg = parser.parse_args()
+    if not os.path.exists(arg.work_dir):
+        os.mkdir(arg.work_dir)
+    arg.timestamp = "{0:%Y%m%dT%H-%M-%S/}".format(datetime.now())
+    current_work_dir = os.path.join(arg.work_dir, arg.timestamp)
+    os.mkdir(current_work_dir)
     init_seed(0)
+    arg.work_dir = current_work_dir
     wandb_init(args=arg)
     processor = Processor(arg)
     processor.start()

@@ -331,6 +331,7 @@ class TCN_STRANSF_unit(nn.Module):
         self.tcn1 = unit_tcn_m(in_channels, out_channels, stride=stride)
         self.relu = nn.ReLU()
         self.out_channels = out_channels
+
         if not residual:
             self.residual = lambda x: 0
 
@@ -355,6 +356,35 @@ class TCN_STRANSF_unit(nn.Module):
         return self.relu(x)
 
 
+# Transformer 原始位置编码
+class SinPositionEncoding(nn.Module):
+    def __init__(self, batch_size, max_sequence_length, d_model, base=10000):
+        super().__init__()
+        self.max_sequence_length = max_sequence_length
+        self.d_model = d_model
+        self.base = base
+        self.bach_size = batch_size
+
+    def forward(self):
+        pe = torch.zeros(self.max_sequence_length, self.d_model,
+                         dtype=torch.float)  # size(max_sequence_length, d_model)
+        exp_1 = torch.arange(self.d_model // 2, dtype=torch.float)  # 初始化一半维度，sin位置编码的维度被分为了两部分
+        exp_value = exp_1 / (self.d_model / 2)
+
+        alpha = 1 / (self.base ** exp_value)  # size(dmodel/2)
+        out = torch.arange(self.max_sequence_length, dtype=torch.float)[:, None] @ alpha[None,
+                                                                                   :]  # size(max_sequence_length, d_model/2)
+        embedding_sin = torch.sin(out)
+        embedding_cos = torch.cos(out)
+
+        pe[:, 0::2] = embedding_sin  # 奇数位置设置为sin
+        pe[:, 1::2] = embedding_cos  # 偶数位置设置为cos
+
+        pe_b = [pe for i in range(self.bach_size)]
+        pe_m = torch.stack(pe_b, dim=0)
+        return torch.tensor(pe_m).cuda()
+
+
 class Temporal_Spatial_Trans_unit(nn.Module):
     def __init__(self, in_channels, out_channels, heads=3, stride=1, residual=True, dropout=0.1, mask=None,
                  num_frame=100,
@@ -364,19 +394,14 @@ class Temporal_Spatial_Trans_unit(nn.Module):
         self.temporal_trans = Transformer(dim=in_channels, depth=1, heads=heads, mlp_dim=in_channels, dropout=dropout)
         self.tcn1 = unit_tcn_m(in_channels, out_channels, stride=stride)
         self.relu = nn.ReLU()
+        self.drop = nn.Dropout(p=0.3)
+        self.linear = nn.Conv2d(in_channels, out_channels, kernel_size=1)
         self.out_channels = out_channels
         self.temporal_embedding = nn.Parameter(torch.zeros(1, num_frame, in_channels))
         if not residual:
             self.residual = lambda x: 0
-
-        elif (in_channels == out_channels) and (stride == 1):
-            self.residual = lambda x: x
-
         else:
-            self.residual = unit_tcn(in_channels, out_channels, kernel_size=1, stride=stride)
-
-        if mask != None:
-            self.mask = nn.Parameter(mask, requires_grad=mask_grad)
+            self.residual = lambda x: x
 
     def forward(self, x, mask=None):
         B, C, T, V = x.size()
@@ -386,21 +411,16 @@ class Temporal_Spatial_Trans_unit(nn.Module):
         else:
             tx = self.transf1(tx, mask)
         sx = rearrange(tx, "(b t) v c -> (b v) t c", t=T)
-        # print(sx.shape, self.temporal_embedding.shape)
         if torch.isnan(sx).any():
             print("before_transformer sx: ", sx.shape)
             print(sx)
             exit(-1)
         # sx += self.temporal_embedding  # 获取可以做一个sin的编码
         sx = self.temporal_trans(sx)
-        if torch.isnan(sx).any():
-            print("after_transformer sx: ", sx.shape)
-            print(sx)
         stx = rearrange(sx, "(b v) t c -> b c t v", v=V)
-
-        # tx = tx.view(B, T, V, C).permute(0, 3, 1, 2).contiguous() # tx: B
-        x = self.tcn1(stx) + self.residual(x)
-        # x = stx + self.residual(x)
+        x = stx + self.residual(x)
+        x = self.linear(x)
+        x = self.drop(x)
         return self.relu(x)
 
 
@@ -469,6 +489,7 @@ class myZiT(nn.Module):
         self.l6 = Temporal_Spatial_Trans_unit(96, 192, heads=num_head, stride=2, mask=None, mask_grad=True,
                                               num_frame=50)
         self.l7 = Temporal_Spatial_Trans_unit(192, 192, heads=num_head, mask=None, mask_grad=True, num_frame=25)
+        self.outlinear = nn.Conv2d(48, 192, kernel_size=1)
 
     def forward(self, x):
         N, C, T, V, M = x.size()
@@ -483,10 +504,10 @@ class myZiT(nn.Module):
         x = self.l5(x)
         x = self.l6(x)
         x = self.l7(x)
-
+        # x = self.outlinear(x)
         B, C_, T_, V_ = x.size()
         x = x.view(N, M, C_, T_, V_).mean(4)
-        x = x.permute(0, 2, 3, 1).contiguous()
+        x = x.permute(0, 2, 3, 1).contiguous()  # B C T M
 
         return x
 
@@ -512,8 +533,8 @@ class ZoT(nn.Module):
         # N,C,T,M
         x1 = self.conv1(x)
         x2 = self.conv2(x)
-        x1 = x1.unsqueeze(3)
-        x2 = x2.unsqueeze(4)
+        x1 = x1.unsqueeze(3)  # N C T P M
+        x2 = x2.unsqueeze(4)  # N C T M P
         mask = x1 - x2
         N, C, T, M, M2 = mask.shape
         mask = mask.permute(0, 2, 1, 3, 4).contiguous().view(N * T, C, M, M2).detach()

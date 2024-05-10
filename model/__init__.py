@@ -4,3 +4,4 @@
 from . import zoom_transformer
 from . import zoom_angular_transformer
 from . import zoom_transformer_fixed_link
+from . import zoom_transformer_angular_simple_gcn_v1

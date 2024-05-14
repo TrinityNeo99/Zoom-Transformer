@@ -196,6 +196,7 @@ def get_parser():
     parser.add_argument('--only_train_part', default=False)
     parser.add_argument('--only_train_epoch', default=0)
     parser.add_argument('--warm_up_epoch', default=0)
+    parser.add_argument('--dataset', default="p2a-14")
     return parser
 
 
@@ -219,10 +220,11 @@ class Processor():
                         # input('Refresh the website of tensorboard by pressing any keys')
                     else:
                         print('Dir not removed: ', arg.model_saved_name)
-                self.train_writer = SummaryWriter(os.path.join(arg.model_saved_name, 'train'), 'train')
-                self.val_writer = SummaryWriter(os.path.join(arg.model_saved_name, 'val'), 'val')
+                # self.train_writer = SummaryWriter(os.path.join(arg.model_saved_name, 'train'), 'train')
+                # self.val_writer = SummaryWriter(os.path.join(arg.model_saved_name, 'val'), 'val')
             else:
-                self.train_writer = self.val_writer = SummaryWriter(os.path.join(arg.model_saved_name, 'test'), 'test')
+                # self.train_writer = self.val_writer = SummaryWriter(os.path.join(arg.model_saved_name, 'test'), 'test')
+                pass
 
         self.global_step = 0
         self.load_model()
@@ -379,7 +381,6 @@ class Processor():
         # for name, param in self.model.named_parameters():
         #     self.train_writer.add_histogram(name, param.clone().cpu().data.numpy(), epoch)
         loss_value = []
-        self.train_writer.add_scalar('epoch', epoch, self.global_step)
         self.record_time()
         timer = dict(dataloader=0.001, model=0.001, statistics=0.001)
         process = tqdm(loader)
@@ -409,8 +410,6 @@ class Processor():
 
             # forward
             output = self.model(data)
-            # if batch_idx == 0 and epoch == 0:
-            #     self.train_writer.add_graph(self.model, output)
             if isinstance(output, tuple):
                 output, l1 = output
                 l1 = l1.mean()
@@ -430,15 +429,15 @@ class Processor():
 
             value, predict_label = torch.max(output.data, 1)
             acc = torch.mean((predict_label == label.data).float())
-            self.train_writer.add_scalar('acc', acc, self.global_step)
-            self.train_writer.add_scalar('loss', loss.data.item(), self.global_step)
-            self.train_writer.add_scalar('loss_l1', l1, self.global_step)
+            # self.train_writer.add_scalar('acc', acc, self.global_step)
+            # self.train_writer.add_scalar('loss', loss.data.item(), self.global_step)
+            # self.train_writer.add_scalar('loss_l1', l1, self.global_step)
             # self.train_writer.add_scalar('batch_time', process.iterable.last_duration, self.global_step)
 
             # statistics
             self.lr = self.optimizer.param_groups[0]['lr']
 
-            self.train_writer.add_scalar('lr', self.lr, self.global_step)
+            # self.train_writer.add_scalar('lr', self.lr, self.global_step)
             # if self.global_step % self.arg.log_interval == 0:
             #     self.print_log(
             #         '\tBatch({}/{}) done. Loss: {:.4f}  lr:{:.6f}'.format(
@@ -516,10 +515,12 @@ class Processor():
             loss = np.mean(loss_value)
             accuracy = self.data_loader[ln].dataset.top_k(score, 1)
             accuracy_top5 = self.data_loader[ln].dataset.top_k(score, 5)
+            if self.arg.dataset is not None:
+                dataset = self.arg.dataset
             if accuracy > self.best_acc:
                 self.best_acc = accuracy
                 predicted_labels = score.argsort()[:, -1]
-                generate_confusion_matrix(predicted_labels, self.data_loader[ln].dataset.label, dataset="p2a-14",
+                generate_confusion_matrix(predicted_labels, self.data_loader[ln].dataset.label, dataset=dataset,
                                           output_dir=self.arg.work_dir, epoch=epoch)
             if accuracy_top5 > self.best_acc5:
                 self.best_acc5 = accuracy_top5
@@ -527,9 +528,10 @@ class Processor():
             # self.lr_scheduler.step(loss)
             print('Accuracy: ', accuracy, ' model: ', self.arg.model_saved_name)
             if self.arg.phase == 'train':
-                self.val_writer.add_scalar('loss', loss, self.global_step)
-                self.val_writer.add_scalar('loss_l1', l1, self.global_step)
-                self.val_writer.add_scalar('acc', accuracy, self.global_step)
+                # self.val_writer.add_scalar('loss', loss, self.global_step)
+                # self.val_writer.add_scalar('loss_l1', l1, self.global_step)
+                # self.val_writer.add_scalar('acc', accuracy, self.global_step)
+                pass
 
             wandb.log({"eval_total_loss": loss, "epoch": epoch})
             wandb.log({"Eval Best top-1 acc": 100 * self.best_acc, "epoch": epoch})
@@ -633,8 +635,8 @@ if __name__ == '__main__':
     if not os.path.exists(arg.work_dir):
         os.mkdir(arg.work_dir)
     arg.timestamp = "{0:%Y%m%dT%H-%M-%S/}".format(datetime.now())
-    current_work_dir = os.path.join(arg.work_dir, arg.timestamp)
-    os.mkdir(current_work_dir)
+    current_work_dir = os.path.join(arg.work_dir, arg.model_saved_name, arg.timestamp)
+    os.makedirs(current_work_dir)
     init_seed(0)
     arg.work_dir = current_work_dir
     wandb_init(args=arg)

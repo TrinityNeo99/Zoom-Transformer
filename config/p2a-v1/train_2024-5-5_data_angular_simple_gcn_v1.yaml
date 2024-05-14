@@ -1,12 +1,12 @@
 work_dir: ./work_dir/p2a
-model_saved_name: zoom_transformer_angular_simple_gcn_v1_2024-5-10-two-person-14-class
+model_saved_name: zoom_transformer_angular_simple_gcn_v1_2024-5-10-two-person-15-class
 
 # feeder
 feeder: feeders.feeder.Feeder
 num_worker: 8
 train_feeder_args:
-  data_path: ../dataset/2024-p2a/2s-AGCN+MSG3D-fomat/p2a/v1/2024-5-10-two-person-14-class/train_data_joint.npy
-  label_path: ../dataset/2024-p2a/2s-AGCN+MSG3D-fomat/p2a/v1/2024-5-10-two-person-14-class/train_label.pkl
+  data_path: ../dataset/2024-p2a/2s-AGCN+MSG3D-fomat/p2a/v1/2024-5-10-two-person-15-class/train_data_joint.npy
+  label_path: ../dataset/2024-p2a/2s-AGCN+MSG3D-fomat/p2a/v1/2024-5-10-two-person-15-class/train_label.pkl
   debug: False
   random_choose: False
   random_shift: False
@@ -15,14 +15,14 @@ train_feeder_args:
   normalization: False
 
 test_feeder_args:
-  data_path: ../dataset/2024-p2a/2s-AGCN+MSG3D-fomat/p2a/v1/2024-5-10-two-person-14-class/val_data_joint.npy
-  label_path: ../dataset/2024-p2a/2s-AGCN+MSG3D-fomat/p2a/v1/2024-5-10-two-person-14-class/val_label.pkl
+  data_path: ../dataset/2024-p2a/2s-AGCN+MSG3D-fomat/p2a/v1/2024-5-10-two-person-15-class/val_data_joint.npy
+  label_path: ../dataset/2024-p2a/2s-AGCN+MSG3D-fomat/p2a/v1/2024-5-10-two-person-15-class/val_label.pkl
   normalization: False
 
 # model
 model: model.zoom_transformer_angular_simple_gcn_v1.Model
 model_args:
-  num_class: 14
+  num_class: 15
   num_person: 2
   num_point: 17
   num_head: 6
@@ -33,14 +33,14 @@ model_args:
 
 #optim
 weight_decay: 0.0005
-base_lr: 0.01 # org 0.1
+base_lr: 0.1 # org 0.1
 step: [ 30,40,50 ]
 
 # training
 device: [ 0 ]
 batch_size: 64
 test_batch_size: 64
-num_epoch: 70
+num_epoch: 60
 nesterov: True
 warm_up_epoch: 2
 

@@ -240,11 +240,11 @@ class Attention(nn.Module):
 
         dots = torch.einsum('bhid,bhjd->bhij', q, k) * self.scale
 
-        attn = dots.softmax(dim=-1)  # follow the softmax,q,d,v equation in the paper
-
         if mask is not None:
             assert mask.shape[-1] == dots.shape[-1], 'mask has incorrect dimensions'
             dots = (dots + mask) * 0.5
+
+        attn = dots.softmax(dim=-1)  # follow the softmax,q,d,v equation in the paper
 
         out = torch.einsum('bhij,bhjd->bhid', attn, v)  # product of v times whatever inside softmax
         out = rearrange(out, 'b h n d -> b n (h d)')  # concat heads into one matrix, ready for next encoder block

@@ -638,7 +638,7 @@ class Temporal_unit(nn.Module):
                  mlp_ratio=4., qkv_bias=True, qk_scale=None,
                  drop_rate=0., attn_drop_rate=0., drop_path_rate=0.1,
                  norm_layer=nn.LayerNorm, ape=False, patch_norm=True,
-                 use_checkpoint=False):
+                 use_checkpoint=False, temporal_merge=False):
         super().__init__()
         assert num_frames % window_size == 0, "num_frames can not divide window size"
         self.mlp_ratio = mlp_ratio
@@ -661,14 +661,13 @@ class Temporal_unit(nn.Module):
             drop=drop_rate, attn_drop=attn_drop_rate,
             # drop_path=dpr[sum(depths[:i_layer]):sum(depths[:i_layer + 1])],
             norm_layer=norm_layer,
-            # downsample=PatchMerging if (i_layer < self.num_layers - 1) else None,
+            downsample=TemporalWindowPatchMerging if temporal_merge else None,
             use_checkpoint=use_checkpoint
         )
 
         self.norm = norm_layer(in_channels)
-        self.avgpool = nn.AdaptiveAvgPool1d(1)
         self.apply(self._init_weights)
-        self.linear = nn.Linear(in_channels, out_channels)
+        # self.linear = nn.Linear(in_channels, out_channels) # 使用temporal_merge以后不需要使用线性层进行升维
         self.pos_drop = nn.Dropout(p=drop_rate)
 
     def _init_weights(self, m):
@@ -685,8 +684,7 @@ class Temporal_unit(nn.Module):
             x = x + self.absolute_pos_embed
         x = self.pos_drop(x)
 
-        for layer in self.layers:
-            x = layer(x)
+        x = self.trans(x)
 
         x = self.norm(x)  # B L C
         return x
@@ -697,21 +695,50 @@ class Temporal_unit(nn.Module):
         return x
 
 
+class TemporalWindowPatchMerging(nn.Module):
+    r""" Patch Merging Layer.
+
+    Args:
+        num_frames(int): the number of frames .
+        dim (int): Number of input channels.
+        norm_layer (nn.Module, optional): Normalization layer.  Default: nn.LayerNorm
+    """
+
+    def __init__(self, num_frames, dim, norm_layer=nn.LayerNorm):
+        super().__init__()
+        self.num_frames = num_frames
+        self.dim = dim
+        self.reduction = nn.Linear(2 * dim, 2 * dim, bias=False)
+        self.norm = norm_layer(2 * dim)
+
+    def forward(self, x):
+        """
+        x: B, L, C
+        """
+        B, L, C = x.shape
+        assert L % 2 == 0, f"x length ({L}) are not even."
+
+        x0 = x[:, 0::2, :]  # B L/2 C
+        x1 = x[:, 1::2, :]  # B L/2 C
+        x = torch.cat([x0, x1], -1)  # B L/2 2*C
+        x = self.norm(x)
+        x = self.reduction(x)
+        return x
+
+
 class Temporal_Spatial_Trans_unit(nn.Module):
     def __init__(self, in_channels, out_channels, spatial_heads=3, temporal_heads=3, stride=1, residual=True,
-                 dropout=0.1, mask=None,
-                 num_frame=100,
-                 mask_grad=True):
+                 dropout=0.1, temporal_merge=False):
         super(Temporal_Spatial_Trans_unit, self).__init__()
         self.transf1 = Transformer(dim=in_channels, depth=1, heads=spatial_heads, mlp_dim=in_channels, dropout=dropout)
         # self.temporal_trans = Transformer(dim=in_channels, depth=1, heads=heads, mlp_dim=in_channels, dropout=dropout)
-        self.transf2 = Temporal_unit(in_channels, out_channels, residual=residual, heads=temporal_heads)
+        self.transf2 = Temporal_unit(in_channels, out_channels, residual=residual, heads=temporal_heads,
+                                     temporal_merge=temporal_merge)
         self.relu = nn.ReLU()
         self.drop = nn.Dropout(p=0.3)
-        self.out_channels = out_channels
         self.bn1 = nn.BatchNorm1d(in_channels)
         bn_init(self.bn1, 1)
-        self.bn2 = nn.BatchNorm2d(in_channels)
+        self.bn2 = nn.BatchNorm2d(out_channels)
         bn_init(self.bn2, 1)
         if not residual:
             self.residual = lambda x: 0
@@ -793,27 +820,20 @@ class myZiT(nn.Module):
 
         self.A = torch.from_numpy(self.graph.A[0].astype(np.float32))
         self.l1 = TCN_GCN_unit(in_channels, 48, self.graph.A[0], residual=False)  # only contain A[0] (adjacency matrix)
-        self.l2 = Temporal_Spatial_Trans_unit(48, 48, spatial_heads=spatial_heads, temporal_heads=temporal_heads,
-                                              mask=None, mask_grad=False)
-        self.l3 = Temporal_Spatial_Trans_unit(48, 48, spatial_heads=spatial_heads, temporal_heads=temporal_heads,
-                                              mask=None, mask_grad=False)
+        self.l2 = Temporal_Spatial_Trans_unit(48, 48, spatial_heads=spatial_heads, temporal_heads=temporal_heads)
+        self.l3 = Temporal_Spatial_Trans_unit(48, 48, spatial_heads=spatial_heads, temporal_heads=temporal_heads)
         self.l4 = Temporal_Spatial_Trans_unit(48, 96, spatial_heads=spatial_heads, temporal_heads=temporal_heads,
-                                              stride=2, mask=None, mask_grad=True)
-        self.l5 = Temporal_Spatial_Trans_unit(96, 96, spatial_heads=spatial_heads, temporal_heads=temporal_heads,
-                                              mask=None, mask_grad=True)
+                                              temporal_merge=True)
+        self.l5 = Temporal_Spatial_Trans_unit(96, 96, spatial_heads=spatial_heads, temporal_heads=temporal_heads)
         self.l6 = Temporal_Spatial_Trans_unit(96, 192, spatial_heads=spatial_heads, temporal_heads=temporal_heads,
-                                              stride=2, mask=None, mask_grad=True)
-        self.l7 = Temporal_Spatial_Trans_unit(192, 192, spatial_heads=spatial_heads, temporal_heads=temporal_heads,
-                                              mask=None, mask_grad=True)
+                                              temporal_merge=True)
+        self.l7 = Temporal_Spatial_Trans_unit(192, 192, spatial_heads=spatial_heads, temporal_heads=temporal_heads)
 
     def forward(self, x):
-        if torch.isnan(x).any():
-            print("587 x")
         N, C, T, V, M = x.size()
         x = x.permute(0, 4, 3, 1, 2).contiguous().view(N, M * V * C, T)
         x = self.data_bn(x)
         x = x.view(N, M, V, C, T).permute(0, 1, 3, 4, 2).contiguous().view(N * M, C, T, V)  # 这样就达到了共享参数的目的
-        x = rearrange(x, "(b v) t c -> b c t v", v=V)
         x = self.l1(x)
         x = self.l3(x)
         x = self.l4(x)

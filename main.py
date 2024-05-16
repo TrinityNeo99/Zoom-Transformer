@@ -557,9 +557,9 @@ class Processor():
             self.global_step = self.arg.start_epoch * len(self.data_loader['train']) / self.arg.batch_size
             for epoch in range(self.arg.start_epoch, self.arg.num_epoch):
                 wandb.log({"epoch": epoch})
-                if self.lr < 1e-4:
-                    print("self.lr is too small: ", self.lr)
-                    break
+                # if self.lr < 1e-4:
+                #     print("self.lr is too small: ", self.lr)
+                #     break
                 save_model = ((epoch + 1) % self.arg.save_interval == 0) or (
                         epoch + 1 == self.arg.num_epoch)
 
@@ -610,10 +610,26 @@ def wandb_init(args):
         # set the wandb project where this run will be logged
         project="sports_action_recognition",
         # name="ASE_GCN_baseline",
-        name="Zoom_Transformer_baseline",
+        name=args.model_saved_name,
         # track hyperparameters and run metadata
         config=args
     )
+
+
+def sweep_train():
+    parser = get_parser()
+    arg = parser.parse_args()
+    if not os.path.exists(arg.work_dir):
+        os.mkdir(arg.work_dir)
+    arg.timestamp = "{0:%Y%m%dT%H-%M-%S/}".format(datetime.now())
+    current_work_dir = os.path.join(arg.work_dir, arg.model_saved_name, arg.timestamp)
+    os.makedirs(current_work_dir)
+    init_seed(0)
+    arg.work_dir = current_work_dir
+    wandb_init(args=arg)
+    processor = Processor(wandb.config)
+    processor.start()
+    wandb.finish()
 
 
 if __name__ == '__main__':
@@ -642,3 +658,4 @@ if __name__ == '__main__':
     wandb_init(args=arg)
     processor = Processor(arg)
     processor.start()
+    wandb.finish()

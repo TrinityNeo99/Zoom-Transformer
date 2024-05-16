@@ -478,7 +478,6 @@ class TemporalWindowAttention(nn.Module):  # attention block
         relative_position_index = relative_index + relative_distance  # W, W
 
         self.register_buffer("relative_position_index", relative_position_index)
-        print(relative_index)
         self.qkv = nn.Linear(dim, dim * 3, bias=qkv_bias)
         self.attn_drop = nn.Dropout(attn_drop)
         self.proj = nn.Linear(dim, dim)
@@ -488,6 +487,7 @@ class TemporalWindowAttention(nn.Module):  # attention block
         self.softmax = nn.Softmax(dim=-1)
 
     def forward(self, x, mask=None):
+        # print(x.shape)
         B_, N, C = x.shape
         qkv = self.qkv(x).reshape(B_, N, 3, self.num_heads, C // self.num_heads).permute(2, 0, 3, 1, 4)
         q, k, v = qkv[0], qkv[1], qkv[2]  # make torchscript happy (cannot use tensor as tuple)
@@ -618,7 +618,7 @@ class TemporalWindowTransformerLayer(nn.Module):
 
         # patch merging layer
         if downsample is not None:
-            self.downsample = downsample(num_frames, dim=dim, norm_layer=norm_layer)
+            self.downsample = downsample(dim=dim, norm_layer=norm_layer)
         else:
             self.downsample = None
 
@@ -645,6 +645,7 @@ class Temporal_unit(nn.Module):
         self.ape = ape
         self.patch_norm = patch_norm
         self.in_channels = in_channels
+        self.window_size = window_size
 
         # absolute position embedding
         if self.ape:
@@ -665,7 +666,7 @@ class Temporal_unit(nn.Module):
             use_checkpoint=use_checkpoint
         )
 
-        self.norm = norm_layer(in_channels)
+        self.norm = norm_layer(out_channels)
         self.apply(self._init_weights)
         # self.linear = nn.Linear(in_channels, out_channels) # 使用temporal_merge以后不需要使用线性层进行升维
         self.pos_drop = nn.Dropout(p=drop_rate)
@@ -680,6 +681,7 @@ class Temporal_unit(nn.Module):
             nn.init.constant_(m.weight, 1.0)
 
     def forward_features(self, x):
+        assert x.size()[1] % self.window_size == 0, "current num_frames can not be divided by window size"
         if self.ape:
             x = x + self.absolute_pos_embed
         x = self.pos_drop(x)
@@ -691,7 +693,7 @@ class Temporal_unit(nn.Module):
 
     def forward(self, x):
         x = self.forward_features(x)
-        x = self.linear(x)
+        # x = self.linear(x)
         return x
 
 
@@ -699,14 +701,12 @@ class TemporalWindowPatchMerging(nn.Module):
     r""" Patch Merging Layer.
 
     Args:
-        num_frames(int): the number of frames .
         dim (int): Number of input channels.
         norm_layer (nn.Module, optional): Normalization layer.  Default: nn.LayerNorm
     """
 
-    def __init__(self, num_frames, dim, norm_layer=nn.LayerNorm):
+    def __init__(self, dim, norm_layer=nn.LayerNorm):
         super().__init__()
-        self.num_frames = num_frames
         self.dim = dim
         self.reduction = nn.Linear(2 * dim, 2 * dim, bias=False)
         self.norm = norm_layer(2 * dim)
@@ -728,12 +728,14 @@ class TemporalWindowPatchMerging(nn.Module):
 
 class Temporal_Spatial_Trans_unit(nn.Module):
     def __init__(self, in_channels, out_channels, spatial_heads=3, temporal_heads=3, stride=1, residual=True,
-                 dropout=0.1, temporal_merge=False):
+                 dropout=0.1, temporal_merge=False, window_size=5, num_frames=100):
         super(Temporal_Spatial_Trans_unit, self).__init__()
         self.transf1 = Transformer(dim=in_channels, depth=1, heads=spatial_heads, mlp_dim=in_channels, dropout=dropout)
         # self.temporal_trans = Transformer(dim=in_channels, depth=1, heads=heads, mlp_dim=in_channels, dropout=dropout)
         self.transf2 = Temporal_unit(in_channels, out_channels, residual=residual, heads=temporal_heads,
-                                     temporal_merge=temporal_merge)
+                                     temporal_merge=temporal_merge, window_size=window_size, num_frames=num_frames,
+                                     ape=True)
+        # TODO ape
         self.relu = nn.ReLU()
         self.drop = nn.Dropout(p=0.3)
         self.bn1 = nn.BatchNorm1d(in_channels)
@@ -805,12 +807,14 @@ class ZiT(nn.Module):
 class myZiT(nn.Module):
     def __init__(self, in_channels=3, num_person=5, num_point=18, spatial_heads=6, temporal_heads=3, graph=None,
                  graph_args=dict(),
-                 num_frame=100):
+                 num_frame=100, embed_dim=48, depths=[2, 2, 2], num_heads=[3, 6, 12], ):
         super(myZiT, self).__init__()
         self.data_bn = nn.BatchNorm1d(num_person * in_channels * num_point)
         bn_init(self.data_bn, 1)
         self.data_bn2 = nn.BatchNorm2d(48)
         bn_init(self.data_bn2, 1)
+        self.num_frames = num_frame
+        self.num_layers = len(depths)
 
         if graph is None:
             raise ValueError()
@@ -819,15 +823,25 @@ class myZiT(nn.Module):
             self.graph = Graph(**graph_args)
 
         self.A = torch.from_numpy(self.graph.A[0].astype(np.float32))
-        self.l1 = TCN_GCN_unit(in_channels, 48, self.graph.A[0], residual=False)  # only contain A[0] (adjacency matrix)
-        self.l2 = Temporal_Spatial_Trans_unit(48, 48, spatial_heads=spatial_heads, temporal_heads=temporal_heads)
-        self.l3 = Temporal_Spatial_Trans_unit(48, 48, spatial_heads=spatial_heads, temporal_heads=temporal_heads)
+        self.l1 = TCN_GCN_unit(in_channels, embed_dim, self.graph.A[0],
+                               residual=False)  # only contain A[0] (adjacency matrix)
+        self.layers = nn.ModuleList()
+
+        self.l2 = Temporal_Spatial_Trans_unit(48, 48, spatial_heads=spatial_heads, temporal_heads=temporal_heads,
+                                              window_size=5, num_frames=self.num_frames)
+        self.l3 = Temporal_Spatial_Trans_unit(48, 48, spatial_heads=spatial_heads, temporal_heads=temporal_heads,
+                                              window_size=5, num_frames=self.num_frames)
         self.l4 = Temporal_Spatial_Trans_unit(48, 96, spatial_heads=spatial_heads, temporal_heads=temporal_heads,
-                                              temporal_merge=True)
-        self.l5 = Temporal_Spatial_Trans_unit(96, 96, spatial_heads=spatial_heads, temporal_heads=temporal_heads)
-        self.l6 = Temporal_Spatial_Trans_unit(96, 192, spatial_heads=spatial_heads, temporal_heads=temporal_heads,
-                                              temporal_merge=True)
-        self.l7 = Temporal_Spatial_Trans_unit(192, 192, spatial_heads=spatial_heads, temporal_heads=temporal_heads)
+                                              window_size=5,
+                                              temporal_merge=True, num_frames=self.num_frames)
+        self.l5 = Temporal_Spatial_Trans_unit(96, 96, spatial_heads=spatial_heads, temporal_heads=temporal_heads * 2,
+                                              window_size=5, num_frames=self.num_frames // 2)
+        self.l6 = Temporal_Spatial_Trans_unit(96, 192, spatial_heads=spatial_heads, temporal_heads=temporal_heads * 2,
+                                              window_size=5,
+                                              temporal_merge=True,
+                                              num_frames=self.num_frames // 2)
+        self.l7 = Temporal_Spatial_Trans_unit(192, 192, spatial_heads=spatial_heads, temporal_heads=temporal_heads * 4,
+                                              window_size=5, num_frames=self.num_frames // 4)
 
     def forward(self, x):
         N, C, T, V, M = x.size()
@@ -844,6 +858,24 @@ class myZiT(nn.Module):
         x = x.view(N, M, C_, T_, V_).mean(4)
         x = x.permute(0, 2, 3, 1).contiguous()  # B C T M
         return x
+
+
+class myZoT(nn.Module):
+    def __init__(self, num_class=15, spatial_heads=6, temporal_heads=3, num_frames=100):
+        super().__init__()
+        self.l1 = Temporal_Spatial_Trans_unit(192, 192, spatial_heads=spatial_heads, temporal_heads=temporal_heads,
+                                              window_size=5, num_frames=num_frames // 4)
+
+        self.fc = nn.Linear(192, num_class)
+        nn.init.normal_(self.fc.weight, 0, math.sqrt(2. / num_class))
+
+    def forward(self, x):
+        # N,C,T,M
+
+        x = self.l1(x)
+        x = x.mean(3).mean(2)
+
+        return self.fc(x)
 
 
 class ZoT(nn.Module):
@@ -888,7 +920,7 @@ class Model(nn.Module):
 
         self.body_transf = myZiT(in_channels=in_channels, num_person=num_person, num_point=num_point,
                                  graph=graph, graph_args=graph_args)
-        self.group_transf = ZoT(num_class=num_class, num_head=num_head)
+        self.group_transf = ZoT(num_class=num_class)
 
         self.angular_feature = Angular_feature()
 
@@ -900,5 +932,4 @@ class Model(nn.Module):
         #     x)  # add 9 channels with original 3 channels, total 12 channels.
         x = self.body_transf(x)
         x = self.group_transf(x)
-
         return x

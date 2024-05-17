@@ -728,13 +728,13 @@ class TemporalWindowPatchMerging(nn.Module):
 
 class Temporal_Spatial_Trans_unit(nn.Module):
     def __init__(self, in_channels, out_channels, spatial_heads=3, temporal_heads=3, stride=1, residual=True,
-                 dropout=0.1, temporal_merge=False, window_size=5, num_frames=100):
+                 dropout=0.1, temporal_merge=False, window_size=5, num_frames=100, temporal_depth=2):
         super(Temporal_Spatial_Trans_unit, self).__init__()
         self.transf1 = Transformer(dim=in_channels, depth=1, heads=spatial_heads, mlp_dim=in_channels, dropout=dropout)
         # self.temporal_trans = Transformer(dim=in_channels, depth=1, heads=heads, mlp_dim=in_channels, dropout=dropout)
         self.transf2 = Temporal_unit(in_channels, out_channels, residual=residual, heads=temporal_heads,
                                      temporal_merge=temporal_merge, window_size=window_size, num_frames=num_frames,
-                                     ape=True)
+                                     ape=False, depth=temporal_depth)
         # TODO ape
         self.relu = nn.ReLU()
         self.drop = nn.Dropout(p=0.3)
@@ -807,7 +807,7 @@ class ZiT(nn.Module):
 class myZiT(nn.Module):
     def __init__(self, in_channels=3, num_person=5, num_point=18, spatial_heads=6, temporal_heads=3, graph=None,
                  graph_args=dict(),
-                 num_frame=100, embed_dim=48, depths=[2, 2, 2], num_heads=[3, 6, 12], ):
+                 num_frame=100, embed_dim=48, depths=[2, 2, 2], num_heads=[3, 6, 12]):
         super(myZiT, self).__init__()
         self.data_bn = nn.BatchNorm1d(num_person * in_channels * num_point)
         bn_init(self.data_bn, 1)

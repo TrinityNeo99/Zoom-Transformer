@@ -616,8 +616,32 @@ def wandb_init(args):
     )
 
 
+def sweep_test():
+    wandb.init()
+    bacc = 0
+    for i in range(50):
+        acc = random.randint(0, 100)
+        if acc > bacc:
+            bacc = acc
+    wandb.log({"Eval Best top-1 acc": bacc})
+
+
 def sweep_train():
+    default_config_path = "./config/p2a-v1/train_2024-5-5_data_angular.yaml"
     parser = get_parser()
+    # load arg form config file
+    p = parser.parse_args()
+    p.config = default_config_path
+    if p.config is not None:
+        with open(p.config, 'r') as f:
+            default_arg = yaml.safe_load(f)
+        key = vars(p).keys()
+        for k in default_arg.keys():
+            if k not in key:
+                print('WRONG ARG: {}'.format(k))
+                assert (k in key)
+        parser.set_defaults(**default_arg)
+
     arg = parser.parse_args()
     if not os.path.exists(arg.work_dir):
         os.mkdir(arg.work_dir)

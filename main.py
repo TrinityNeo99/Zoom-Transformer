@@ -160,6 +160,8 @@ def get_parser():
     parser.add_argument(
         '--base-lr', type=float, default=0.01, help='initial learning rate')
     parser.add_argument(
+        '--gamma', type=float, default=0.1, help='scaler of learning rate')
+    parser.add_argument(
         '--step',
         type=int,
         default=[20, 40, 60],
@@ -338,7 +340,7 @@ class Processor():
         with open('{}/config.yaml'.format(self.arg.work_dir), 'w') as f:
             yaml.dump(arg_dict, f)
 
-    def adjust_learning_rate(self, epoch):
+    def adjust_learning_rate(self, epoch, gamma):
         if self.arg.optimizer == 'SGD' or self.arg.optimizer == 'Adam':
             if epoch < self.arg.warm_up_epoch:
                 lr = self.arg.base_lr * (epoch + 1) / self.arg.warm_up_epoch
@@ -377,7 +379,7 @@ class Processor():
         self.model.train()
         self.print_log('Training epoch: {}'.format(epoch + 1))
         loader = self.data_loader['train']
-        self.adjust_learning_rate(epoch)
+        self.adjust_learning_rate(epoch, self.arg.gamma)
         # for name, param in self.model.named_parameters():
         #     self.train_writer.add_histogram(name, param.clone().cpu().data.numpy(), epoch)
         loss_value = []
@@ -628,6 +630,36 @@ def sweep_test():
 
 def sweep_train():
     default_config_path = "./config/p2a-v1/train_2024-5-5_data_angular.yaml"
+    parser = get_parser()
+    # load arg form config file
+    p = parser.parse_args()
+    p.config = default_config_path
+    if p.config is not None:
+        with open(p.config, 'r') as f:
+            default_arg = yaml.safe_load(f)
+        key = vars(p).keys()
+        for k in default_arg.keys():
+            if k not in key:
+                print('WRONG ARG: {}'.format(k))
+                assert (k in key)
+        parser.set_defaults(**default_arg)
+
+    arg = parser.parse_args()
+    if not os.path.exists(arg.work_dir):
+        os.mkdir(arg.work_dir)
+    arg.timestamp = "{0:%Y%m%dT%H-%M-%S/}".format(datetime.now())
+    current_work_dir = os.path.join(arg.work_dir, arg.model_saved_name, arg.timestamp)
+    os.makedirs(current_work_dir)
+    init_seed(0)
+    arg.work_dir = current_work_dir
+    wandb_init(args=arg)
+    processor = Processor(wandb.config)
+    processor.start()
+    wandb.finish()
+
+
+def bodypart_sweep_train():
+    default_config_path = "./config/p2a-v1/train_bodypart.yaml"
     parser = get_parser()
     # load arg form config file
     p = parser.parse_args()

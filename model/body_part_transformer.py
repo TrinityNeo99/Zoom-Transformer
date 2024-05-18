@@ -83,7 +83,7 @@ class KeyPointMerge(nn.Module):
 
 class BodyPartBlock(nn.Module):
     def __init__(self, in_channels, out_channels, num_frames, spatial_heads, temporal_heads, temporal_merge=False,
-                 TAOB_depth=[2, 2, 2]):
+                 TAOB_depth=[2, 2, 2], SAOB=[1, 1, 1], TWsize_AOB=[8, 8, 8]):
         super().__init__()
         self.num_frames = num_frames
         if temporal_merge:
@@ -92,17 +92,29 @@ class BodyPartBlock(nn.Module):
             self.merge_blk_in_ch = in_channels
         self.arm_block = Temporal_Spatial_Trans_unit(in_channels, out_channels, spatial_heads=spatial_heads,
                                                      temporal_heads=temporal_heads,
-                                                     window_size=5, temporal_merge=temporal_merge,
-                                                     num_frames=num_frames, temporal_depth=TAOB_depth[0])
+                                                     temporal_merge=temporal_merge,
+                                                     num_frames=num_frames, temporal_depth=TAOB_depth[0],
+                                                     spatial_depth=SAOB[0],
+                                                     temporal_window_size=TWsize_AOB[0],
+                                                     residual=True
+                                                     )
         self.other_block = Temporal_Spatial_Trans_unit(in_channels, out_channels, spatial_heads=spatial_heads,
                                                        temporal_heads=temporal_heads,
-                                                       window_size=5, temporal_merge=temporal_merge,
-                                                       num_frames=num_frames, temporal_depth=TAOB_depth[1])
+                                                       temporal_merge=temporal_merge,
+                                                       num_frames=num_frames, temporal_depth=TAOB_depth[1],
+                                                       spatial_depth=SAOB[1],
+                                                       temporal_window_size=TWsize_AOB[1],
+                                                       residual=True
+                                                       )
         self.body_block = Temporal_Spatial_Trans_unit(self.merge_blk_in_ch, out_channels, spatial_heads=spatial_heads,
                                                       temporal_heads=temporal_heads,
-                                                      window_size=5, temporal_merge=False,
+                                                      temporal_merge=False,  # 前面的两部分已经merge过了
                                                       num_frames=num_frames,
-                                                      temporal_depth=TAOB_depth[2])  # 前面的两部分已经merge过了
+                                                      temporal_depth=TAOB_depth[2],
+                                                      spatial_depth=SAOB[2],
+                                                      temporal_window_size=TWsize_AOB[2],
+                                                      residual=True
+                                                      )
         self.keypoint_divide = KeyPointDivide()
         self.keypoint_merge = KeyPointMerge()
         self.data_bn1 = nn.BatchNorm2d(out_channels)
@@ -129,20 +141,23 @@ class BodyPartLayer(nn.Module):
     def __init__(self, in_channels, num_frames=100):
         super().__init__()
         self.num_frames = num_frames
-        self.l2 = BodyPartBlock(in_channels=48, out_channels=48, num_frames=self.num_frames, spatial_heads=6,
-                                temporal_heads=3, TAOB_depth=[2, 2, 2])
+        # self.l2 = BodyPartBlock(in_channels=48, out_channels=48, num_frames=self.num_frames, spatial_heads=6,
+        #                         temporal_heads=3, TAOB_depth=[2, 2, 2])
         self.l3 = BodyPartBlock(in_channels=48, out_channels=96, num_frames=self.num_frames, spatial_heads=6,
-                                temporal_heads=3, temporal_merge=True, TAOB_depth=[4, 2, 2])
+                                temporal_heads=3, temporal_merge=True, TAOB_depth=[4, 2, 2], SAOB=[1, 1, 1],
+                                TWsize_AOB=[8, 8, 8])
         # self.l4 = BodyPartBlock(in_channels=96, out_channels=96, num_frames=self.num_frames // 2, spatial_heads=6,
         #                         temporal_heads=6, TAOB_depth=[4, 2, 2])
         self.l5 = BodyPartBlock(in_channels=96, out_channels=192, num_frames=self.num_frames // 2, spatial_heads=6,
-                                temporal_heads=6, temporal_merge=True, TAOB_depth=[4, 2, 2])
+                                temporal_heads=6, temporal_merge=True, TAOB_depth=[4, 2, 2], SAOB=[1, 1, 1],
+                                TWsize_AOB=[8, 8, 8])
         self.l6 = BodyPartBlock(in_channels=192, out_channels=192, num_frames=self.num_frames // 4, spatial_heads=6,
-                                temporal_heads=12, TAOB_depth=[2, 2, 2])
+                                temporal_heads=12, TAOB_depth=[2, 2, 2], SAOB=[1, 1, 1],
+                                TWsize_AOB=[8, 8, 8])
         pass
 
     def forward(self, x):
-        x = self.l2(x)
+        # x = self.l2(x)
         x = self.l3(x)
         # x = self.l4(x)
         x = self.l5(x)
@@ -152,7 +167,7 @@ class BodyPartLayer(nn.Module):
 
 class Model(nn.Module):
     def __init__(self, num_class=15, in_channels=3, num_person=5, num_point=17, num_head=6, graph=None,
-                 graph_args=dict(), num_frames=100):
+                 graph_args=dict(), num_frames=128):
         super().__init__()
         if graph is None:
             raise ValueError()
@@ -166,8 +181,8 @@ class Model(nn.Module):
         self.A = torch.from_numpy(self.graph.A[0].astype(np.float32))
         self.tcn_gcn_embedding = TCN_GCN_unit(in_channels, 48, self.graph.A[0],
                                               residual=False)  # only contain A[0] (adjacency matrix)
-        self.body_part_layer = BodyPartLayer(in_channels=48)
-        # self.proj = nn.Linear(192, 276)
+        self.body_part_layer = BodyPartLayer(in_channels=48, num_frames=num_frames)
+        self.proj = nn.Linear(192, 276)
         self.fc = nn.Linear(192, num_class)
         nn.init.normal_(self.fc.weight, 0, math.sqrt(2. / num_class))
 

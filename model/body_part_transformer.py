@@ -65,6 +65,21 @@ class KeyPointDivide(nn.Module):
         return arm_feature, other_feature
 
 
+class KeyPointDivideDynamic(nn.Module):
+    def __init__(self, num_joints):
+        super().__init__()
+        arm_index_init = [5, 6, 7, 8, 9, 10]
+        conf_list = [1.0 if i in arm_index_init else 0.0 for i in range(num_joints)]
+        joints_conf = nn.Parameter(torch.tensor(conf_list))
+        self.fc = nn.Softmax()
+
+    def forward(self, x):
+        # x: B C T V
+        arm_feature = x[:, :, :, self.arm_index]
+        other_feature = x[:, :, :, self.other_index]
+        return arm_feature, other_feature
+
+
 class KeyPointMerge(nn.Module):
     def __init__(self):
         super().__init__()
@@ -138,22 +153,22 @@ class BodyPartBlock(nn.Module):
 
 
 class BodyPartLayer(nn.Module):
-    def __init__(self, in_channels, num_frames=100):
+    def __init__(self, in_channels, num_frames=100, TWsize_AOB=[8, 8, 8]):
         super().__init__()
         self.num_frames = num_frames
         # self.l2 = BodyPartBlock(in_channels=48, out_channels=48, num_frames=self.num_frames, spatial_heads=6,
         #                         temporal_heads=3, TAOB_depth=[2, 2, 2])
         self.l3 = BodyPartBlock(in_channels=48, out_channels=96, num_frames=self.num_frames, spatial_heads=6,
                                 temporal_heads=3, temporal_merge=True, TAOB_depth=[4, 2, 2], SAOB=[1, 1, 1],
-                                TWsize_AOB=[8, 8, 8])
+                                TWsize_AOB=TWsize_AOB)
         # self.l4 = BodyPartBlock(in_channels=96, out_channels=96, num_frames=self.num_frames // 2, spatial_heads=6,
         #                         temporal_heads=6, TAOB_depth=[4, 2, 2])
         self.l5 = BodyPartBlock(in_channels=96, out_channels=192, num_frames=self.num_frames // 2, spatial_heads=6,
                                 temporal_heads=6, temporal_merge=True, TAOB_depth=[4, 2, 2], SAOB=[1, 1, 1],
-                                TWsize_AOB=[8, 8, 8])
+                                TWsize_AOB=TWsize_AOB)
         self.l6 = BodyPartBlock(in_channels=192, out_channels=192, num_frames=self.num_frames // 4, spatial_heads=6,
                                 temporal_heads=12, TAOB_depth=[2, 2, 2], SAOB=[1, 1, 1],
-                                TWsize_AOB=[8, 8, 8])
+                                TWsize_AOB=TWsize_AOB)
         pass
 
     def forward(self, x):
@@ -167,7 +182,7 @@ class BodyPartLayer(nn.Module):
 
 class Model(nn.Module):
     def __init__(self, num_class=15, in_channels=3, num_person=5, num_point=17, num_head=6, graph=None,
-                 graph_args=dict(), num_frames=128):
+                 graph_args=dict(), num_frames=128, TWsize_AOB=[8, 8, 8]):
         super().__init__()
         if graph is None:
             raise ValueError()
@@ -181,7 +196,7 @@ class Model(nn.Module):
         self.A = torch.from_numpy(self.graph.A[0].astype(np.float32))
         self.tcn_gcn_embedding = TCN_GCN_unit(in_channels, 48, self.graph.A[0],
                                               residual=False)  # only contain A[0] (adjacency matrix)
-        self.body_part_layer = BodyPartLayer(in_channels=48, num_frames=num_frames)
+        self.body_part_layer = BodyPartLayer(in_channels=48, num_frames=num_frames, TWsize_AOB=TWsize_AOB)
         self.proj = nn.Linear(192, 276)
         self.fc = nn.Linear(192, num_class)
         nn.init.normal_(self.fc.weight, 0, math.sqrt(2. / num_class))

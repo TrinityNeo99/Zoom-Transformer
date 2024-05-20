@@ -199,6 +199,12 @@ def get_parser():
     parser.add_argument('--only_train_epoch', default=0)
     parser.add_argument('--warm_up_epoch', default=0)
     parser.add_argument('--dataset', default="p2a-14")
+    parser.add_argument(
+        '--TWs',
+        type=int,
+        default=[8, 8, 8],
+        nargs='+',
+        help='temporal window size arm/other/body')
     return parser
 
 

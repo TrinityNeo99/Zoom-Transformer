@@ -59,7 +59,7 @@ class Angular_feature:
     def __init__(self):
         self.cos = nn.CosineSimilarity(dim=1, eps=0)
 
-    def preprocessing_pingpong_coco(self, x):
+    def preprocessing_pingpong_coco(self, x, addMotion=False):
         # Extract Bone and Angular Features
         fp_sp_joint_list_bone = []
         fp_sp_joint_list_bone_angle = []
@@ -67,11 +67,12 @@ class Angular_feature:
         fp_sp_two_elbow_angle = []
         fp_sp_two_knee_angle = []
         fp_sp_two_feet_angle = []
+        motion = []
 
         all_list = [
             fp_sp_joint_list_bone, fp_sp_joint_list_bone_angle,
             fp_sp_two_hand_angle, fp_sp_two_elbow_angle, fp_sp_two_knee_angle,
-            fp_sp_two_feet_angle, fp_sp_two_hand_angle
+            fp_sp_two_feet_angle, fp_sp_two_hand_angle,
         ]  # 3 + 1 + 1 + 1 + 1 + 1
         # print("len of pairs.keys", len(pingpong_coco_bone_angle_pairs.keys()))
         for a_key in pingpong_coco_bone_angle_pairs.keys():
@@ -121,11 +122,21 @@ class Angular_feature:
             fp_sp_two_feet_angle.append(angular_feature.unsqueeze(2).unsqueeze(1).cpu())
 
         for a_list_id in range(len(all_list)):
-            all_list[a_list_id] = torch.cat(all_list[a_list_id], dim=3)
-            # print(all_list[a_list_id].shape)
+            all_list[a_list_id] = torch.cat(all_list[a_list_id], dim=3)  # cat along V dimension
 
-        # print("a_key: ", a_key)
-        all_list = torch.cat(all_list, dim=1)
+        # generate motion feature
+        if addMotion:
+            motion = []
+            N, C, T, V, M = x.size()
+            motion_diff = x[:, :3, 0, :, :] - x[:, :3, 0, :, :]
+            for i in range(1, T):
+                motion_diff = x[:, :3, i, :, :] - x[:, :3, i - 1, :, :]
+                motion.append(motion_diff)
+            motion.append(motion_diff)  # the last one equal to the before
+            motion = torch.cat(motion, dim=2)  # cat along T dimension
+            all_list.append(motion)  # add motion feature
+
+        all_list = torch.cat(all_list, dim=1)  # cat along feature C dimension
         # print('All_list:', all_list.shape)
         #
         # print('x:', x.shape)

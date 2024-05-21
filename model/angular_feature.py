@@ -67,7 +67,6 @@ class Angular_feature:
         fp_sp_two_elbow_angle = []
         fp_sp_two_knee_angle = []
         fp_sp_two_feet_angle = []
-        motion = []
 
         all_list = [
             fp_sp_joint_list_bone, fp_sp_joint_list_bone_angle,

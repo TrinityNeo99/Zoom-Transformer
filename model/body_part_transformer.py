@@ -98,7 +98,7 @@ class KeyPointMerge(nn.Module):
 
 class BodyPartBlock(nn.Module):
     def __init__(self, in_channels, out_channels, num_frames, spatial_heads, temporal_heads, temporal_merge=False,
-                 TAOB_depth=[2, 2, 2], SAOB=[1, 1, 1], TWsize_AOB=[8, 8, 8]):
+                 TAOB_depth=[2, 2, 2], SAOB=[1, 1, 1], TWsize_AOB=[[8], [8], [8]]):
         super().__init__()
         self.num_frames = num_frames
         if temporal_merge:
@@ -110,7 +110,7 @@ class BodyPartBlock(nn.Module):
                                                      temporal_merge=temporal_merge,
                                                      num_frames=num_frames, temporal_depth=TAOB_depth[0],
                                                      spatial_depth=SAOB[0],
-                                                     temporal_window_size=TWsize_AOB[0],
+                                                     expert_windows_size=TWsize_AOB[0],
                                                      residual=True
                                                      )
         self.other_block = Temporal_Spatial_Trans_unit(in_channels, out_channels, spatial_heads=spatial_heads,
@@ -118,7 +118,7 @@ class BodyPartBlock(nn.Module):
                                                        temporal_merge=temporal_merge,
                                                        num_frames=num_frames, temporal_depth=TAOB_depth[1],
                                                        spatial_depth=SAOB[1],
-                                                       temporal_window_size=TWsize_AOB[1],
+                                                       expert_windows_size=TWsize_AOB[1],
                                                        residual=True
                                                        )
         self.body_block = Temporal_Spatial_Trans_unit(self.merge_blk_in_ch, out_channels, spatial_heads=spatial_heads,
@@ -127,7 +127,7 @@ class BodyPartBlock(nn.Module):
                                                       num_frames=num_frames,
                                                       temporal_depth=TAOB_depth[2],
                                                       spatial_depth=SAOB[2],
-                                                      temporal_window_size=TWsize_AOB[2],
+                                                      expert_windows_size=TWsize_AOB[2],
                                                       residual=True
                                                       )
         self.keypoint_divide = KeyPointDivide()
@@ -153,7 +153,7 @@ class BodyPartBlock(nn.Module):
 
 
 class BodyPartLayer(nn.Module):
-    def __init__(self, in_channels, num_frames=100, TWsize_AOB=[8, 8, 8]):
+    def __init__(self, in_channels, num_frames=100, TWsize_AOB=[[8], [8], [8]]):
         super().__init__()
         self.num_frames = num_frames
         # self.l2 = BodyPartBlock(in_channels=48, out_channels=48, num_frames=self.num_frames, spatial_heads=6,
@@ -182,7 +182,7 @@ class BodyPartLayer(nn.Module):
 
 class Model(nn.Module):
     def __init__(self, num_class=15, in_channels=3, num_person=5, num_point=17, num_head=6, graph=None,
-                 graph_args=dict(), num_frames=128, TWsize_AOB=[8, 8, 8]):
+                 graph_args=dict(), num_frames=128, TWs_aob=[[8], [8], [8]]):
         super().__init__()
         if graph is None:
             raise ValueError()
@@ -196,7 +196,7 @@ class Model(nn.Module):
         self.A = torch.from_numpy(self.graph.A[0].astype(np.float32))
         self.tcn_gcn_embedding = TCN_GCN_unit(in_channels, 48, self.graph.A[0],
                                               residual=False)  # only contain A[0] (adjacency matrix)
-        self.body_part_layer = BodyPartLayer(in_channels=48, num_frames=num_frames, TWsize_AOB=TWsize_AOB)
+        self.body_part_layer = BodyPartLayer(in_channels=48, num_frames=num_frames, TWsize_AOB=TWs_aob)
         self.proj = nn.Linear(192, 276)
         self.fc = nn.Linear(192, num_class)
         nn.init.normal_(self.fc.weight, 0, math.sqrt(2. / num_class))

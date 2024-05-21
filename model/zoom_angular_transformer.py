@@ -646,6 +646,7 @@ class Temporal_unit(nn.Module):
         self.patch_norm = patch_norm
         self.in_channels = in_channels
         self.window_size = window_size
+        self.out_channels = out_channels
 
         # absolute position embedding
         if self.ape:
@@ -728,16 +729,26 @@ class TemporalWindowPatchMerging(nn.Module):
 
 class Temporal_Spatial_Trans_unit(nn.Module):
     def __init__(self, in_channels, out_channels, spatial_heads=3, temporal_heads=3, stride=1, residual=True,
-                 dropout=0.1, temporal_merge=False, temporal_window_size=5, num_frames=100, temporal_depth=2,
-                 spatial_depth=1):
+                 dropout=0.1, temporal_merge=False, expert_windows_size=[8, 8], num_frames=100, temporal_depth=2,
+                 spatial_depth=1, expert_weights=[0.5, 0.5]):
         super(Temporal_Spatial_Trans_unit, self).__init__()
-        self.transf1 = Transformer(dim=in_channels, depth=spatial_depth, heads=spatial_heads, mlp_dim=in_channels,
+        self.S_trans = Transformer(dim=in_channels, depth=spatial_depth, heads=spatial_heads, mlp_dim=in_channels,
                                    dropout=dropout)
-        # self.temporal_trans = Transformer(dim=in_channels, depth=1, heads=heads, mlp_dim=in_channels, dropout=dropout)
-        self.transf2 = Temporal_unit(in_channels, out_channels, residual=residual, heads=temporal_heads,
-                                     temporal_merge=temporal_merge, window_size=temporal_window_size,
-                                     num_frames=num_frames,
-                                     ape=False, depth=temporal_depth)
+
+        if len(expert_windows_size) == 1:
+            expert_weights = [1.0]
+        assert len(expert_weights) == len(
+            expert_windows_size), "the numbers of expert weights and their windows size are not equal"
+        expert_weights = torch.tensor(expert_weights)
+        self.experts = nn.ModuleList()
+        self.num_experts = len(expert_windows_size)
+        self.temporal_merge = temporal_merge
+        for i in range(self.num_experts):
+            self.experts.append(Temporal_unit(in_channels, out_channels, residual=residual, heads=temporal_heads,
+                                              temporal_merge=temporal_merge, window_size=expert_windows_size[i],
+                                              num_frames=num_frames,
+                                              ape=False, depth=temporal_depth))
+
         # TODO ape
         self.relu = nn.ReLU()
         self.drop = nn.Dropout(p=0.3)
@@ -751,17 +762,25 @@ class Temporal_Spatial_Trans_unit(nn.Module):
             self.residual = TemporalWindowPatchMerging(in_channels)
         elif temporal_merge == False:
             self.residual = lambda x: x
+        self.register_buffer("expert_weights", expert_weights)
 
     def forward(self, x, mask=None):
         B, C, T, V = x.size()
+        # print("x", x.shape)
         rx = rearrange(x, "b c t v -> (b v) t c")
         sx = x.permute(0, 2, 3, 1).contiguous().view(B * T, V, C)
-        sx = self.transf1(sx)
+        sx = self.S_trans(sx)
         sx = rearrange(sx, "(b t) v c -> (b v) c t", t=T, v=V)
         sx = self.bn1(sx)
         tx = rearrange(sx, "(b v) c t -> (b v) t c", t=T, v=V)
-        tx = self.transf2(tx)
-        stx = rearrange(tx, "(b v) t c -> b c t v", v=V)
+        if self.temporal_merge:
+            atx = torch.zeros(B * V, T // 2, C * 2)
+        else:
+            atx = torch.zeros(B * V, T, C)  # get experts' embedding dimension
+        atx = atx.cuda()
+        for i in range(self.num_experts):
+            atx += self.expert_weights[i] * self.experts[i](tx)
+        stx = rearrange(atx, "(b v) t c -> b c t v", v=V)
         stx = self.bn2(stx)
         stx = self.drop(stx)
         rx = self.residual(rx)
@@ -816,7 +835,7 @@ class ZiT(nn.Module):
 class myZiT(nn.Module):
     def __init__(self, in_channels=3, num_person=5, num_point=18, spatial_heads=6, temporal_heads=3, graph=None,
                  graph_args=dict(),
-                 num_frame=100, embed_dim=48, depths=[2, 2, 2], num_heads=[3, 6, 12], temporal_window_size=8):
+                 num_frame=100, embed_dim=48, depths=[2, 2, 2], expert_windows_size=[8, 8], expert_weights=[0.5, 0.5]):
         super(myZiT, self).__init__()
         self.data_bn = nn.BatchNorm1d(num_person * in_channels * num_point)
         bn_init(self.data_bn, 1)
@@ -837,22 +856,28 @@ class myZiT(nn.Module):
         self.layers = nn.ModuleList()
 
         self.l2 = Temporal_Spatial_Trans_unit(48, 48, spatial_heads=spatial_heads, temporal_heads=temporal_heads,
-                                              temporal_window_size=temporal_window_size, num_frames=self.num_frames)
+                                              expert_windows_size=expert_windows_size, num_frames=self.num_frames,
+                                              expert_weights=expert_weights)
         self.l3 = Temporal_Spatial_Trans_unit(48, 48, spatial_heads=spatial_heads, temporal_heads=temporal_heads,
-                                              temporal_window_size=temporal_window_size, num_frames=self.num_frames)
+                                              expert_windows_size=expert_windows_size, num_frames=self.num_frames,
+                                              expert_weights=expert_weights)
         self.l4 = Temporal_Spatial_Trans_unit(48, 96, spatial_heads=spatial_heads, temporal_heads=temporal_heads,
-                                              temporal_window_size=temporal_window_size,
-                                              temporal_merge=True, num_frames=self.num_frames)
+                                              expert_windows_size=expert_windows_size,
+                                              temporal_merge=True, num_frames=self.num_frames,
+                                              expert_weights=expert_weights)
         self.l5 = Temporal_Spatial_Trans_unit(96, 96, spatial_heads=spatial_heads, temporal_heads=temporal_heads * 2,
-                                              temporal_window_size=temporal_window_size,
-                                              num_frames=self.num_frames // 2)
+                                              expert_windows_size=expert_windows_size,
+                                              num_frames=self.num_frames // 2,
+                                              expert_weights=expert_weights)
         self.l6 = Temporal_Spatial_Trans_unit(96, 192, spatial_heads=spatial_heads, temporal_heads=temporal_heads * 2,
-                                              temporal_window_size=temporal_window_size,
+                                              expert_windows_size=expert_windows_size,
                                               temporal_merge=True,
-                                              num_frames=self.num_frames // 2)
+                                              num_frames=self.num_frames // 2,
+                                              expert_weights=expert_weights)
         self.l7 = Temporal_Spatial_Trans_unit(192, 192, spatial_heads=spatial_heads, temporal_heads=temporal_heads * 4,
-                                              temporal_window_size=temporal_window_size,
-                                              num_frames=self.num_frames // 4)
+                                              expert_windows_size=expert_windows_size,
+                                              num_frames=self.num_frames // 4,
+                                              expert_weights=expert_weights)
 
     def forward(self, x):
         N, C, T, V, M = x.size()
@@ -926,11 +951,14 @@ class ZoT(nn.Module):
 
 class Model(nn.Module):
     def __init__(self, num_class=15, in_channels=3, num_person=5, num_point=18, num_head=6, graph=None,
-                 graph_args=dict()):
+                 graph_args=dict(), expert_windows_size=[8, 8],
+                 expert_weights=[0.5, 0.5]):
         super(Model, self).__init__()
 
         self.body_transf = myZiT(in_channels=in_channels, num_person=num_person, num_point=num_point,
-                                 graph=graph, graph_args=graph_args, num_frame=128)
+                                 graph=graph, graph_args=graph_args, num_frame=128,
+                                 expert_windows_size=expert_windows_size,
+                                 expert_weights=expert_weights)
         self.group_transf = ZoT(num_class=num_class)
 
         self.angular_feature = Angular_feature()

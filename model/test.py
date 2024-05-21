@@ -68,8 +68,24 @@ def discretize(tensor, bins):
     return discretized
 
 
+def test2():
+    tx = 10
+    tx = 0.4 * tx + 0.6 * tx
+    print(tx)
+
+
+def test3():
+    tx = 10
+    w = [0.4, 0.6]
+    for i in range(len(w)):
+        tx += tx * w[i]
+    print(tx)
+
+
 if __name__ == '__main__':
     m = modelTest()
     # m.test()
     # m.mytest()
-    m.test_discrete()
+    # m.test_discrete()
+    test2()
+    test3()

@@ -556,8 +556,8 @@ class Processor():
                     pickle.dump(score_dict, f)
 
     def calculate_params_flops(self):
-        dummy_input = torch.randn(1, 3, 128, 17, 1).cuda(self.output_device)
-        if len(self.arg.device) > 1:
+        dummy_input = torch.randn(2, 3, 128, 17, 1).cuda(self.output_device)
+        if isinstance(self.arg.device, list) and len(self.arg.device) > 1:
             flops, params = profile(self.model.module, inputs=(dummy_input,))
         else:
             flops, params = profile(self.model, inputs=(dummy_input,))
@@ -570,7 +570,7 @@ class Processor():
         print("flops: ", flops)
 
     def start(self):
-        if len(self.arg.device) <= 1:
+        if isinstance(self.arg.device, int) or len(self.arg.device) <= 1:
             self.calculate_params_flops()
         if self.arg.phase == 'train':
             self.print_log('Parameters:\n{}\n'.format(str(vars(self.arg))))

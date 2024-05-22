@@ -730,10 +730,11 @@ class TemporalWindowPatchMerging(nn.Module):
 class Temporal_Spatial_Trans_unit(nn.Module):
     def __init__(self, in_channels, out_channels, spatial_heads=3, temporal_heads=3, stride=1, residual=True,
                  dropout=0.1, temporal_merge=False, expert_windows_size=[8, 8], num_frames=100, temporal_depth=2,
-                 spatial_depth=1, expert_weights=[0.5, 0.5], isLearnable=False):
+                 spatial_depth=1, expert_weights=[0.5, 0.5], isLearnable=False, channelDivide=False):
         super(Temporal_Spatial_Trans_unit, self).__init__()
         self.S_trans = Transformer(dim=in_channels, depth=spatial_depth, heads=spatial_heads, mlp_dim=in_channels,
                                    dropout=dropout)
+        self.channelDivide = channelDivide
 
         if len(expert_windows_size) == 1:
             expert_weights = [1.0]
@@ -748,10 +749,14 @@ class Temporal_Spatial_Trans_unit(nn.Module):
         self.num_experts = len(expert_windows_size)
         self.temporal_merge = temporal_merge
         for i in range(self.num_experts):
-            self.experts.append(Temporal_unit(in_channels, out_channels, residual=residual, heads=temporal_heads,
-                                              temporal_merge=temporal_merge, window_size=expert_windows_size[i],
-                                              num_frames=num_frames,
-                                              ape=False, depth=temporal_depth))
+            self.experts.append(
+                Temporal_unit(in_channels // self.num_experts if self.channelDivide else in_channels,
+                              out_channels // self.num_experts if self.channelDivide else out_channels,
+                              residual=residual,
+                              heads=temporal_heads,
+                              temporal_merge=temporal_merge, window_size=expert_windows_size[i],
+                              num_frames=num_frames,
+                              ape=False, depth=temporal_depth))
 
         # TODO ape
         self.relu = nn.ReLU()
@@ -776,13 +781,10 @@ class Temporal_Spatial_Trans_unit(nn.Module):
         sx = rearrange(sx, "(b t) v c -> (b v) c t", t=T, v=V)
         sx = self.bn1(sx)
         tx = rearrange(sx, "(b v) c t -> (b v) t c", t=T, v=V)
-        if self.temporal_merge:
-            atx = torch.zeros(B * V, T // 2, C * 2)
+        if self.channelDivide:
+            atx = self.T_multi_expert_channels(tx, B, C, T, V)
         else:
-            atx = torch.zeros(B * V, T, C)  # get experts' embedding dimension
-        atx = atx.cuda()
-        for i in range(self.num_experts):
-            atx += self.expert_weights[i] * self.experts[i](tx)
+            atx = self.T_multi_expert(tx, B, C, T, V)
         stx = rearrange(atx, "(b v) t c -> b c t v", v=V)
         stx = self.bn2(stx)
         stx = self.drop(stx)
@@ -790,6 +792,27 @@ class Temporal_Spatial_Trans_unit(nn.Module):
         rx = rearrange(rx, "(b v) t c -> b c t v", v=V)
         stx = stx + rx
         return self.relu(stx)
+
+    def T_multi_expert(self, x, B, C, T, V):
+        if self.temporal_merge:
+            atx = torch.zeros(B * V, T // 2, C * 2)
+        else:
+            atx = torch.zeros(B * V, T, C)  # get experts' embedding dimension
+        atx = atx.cuda(x.device)
+        for i in range(self.num_experts):
+            atx += self.expert_weights[i] * self.experts[i](x)
+        return atx
+
+    def T_multi_expert_channels(self, x, B, C, T, V):
+        # x : B T C
+        if self.temporal_merge:
+            atx = torch.zeros(B * V, T // 2, C * 2)
+        else:
+            atx = torch.zeros(B * V, T, C)  # get experts' embedding dimension
+        atx = atx.cuda(x.device)
+        for i in range(self.num_experts):
+            atx[:, :, i::self.num_experts] = self.expert_weights[i] * self.experts[i](x[:, :, i::self.num_experts])
+        return atx
 
 
 class ZiT(nn.Module):
@@ -840,7 +863,7 @@ class myZiT(nn.Module):
     def __init__(self, in_channels=3, num_person=5, num_point=18, spatial_heads=6, temporal_heads=3, graph=None,
                  graph_args=dict(),
                  num_frame=100, embed_dim=48, depths=[2, 2, 2], expert_windows_size=[8, 8], expert_weights=[0.5, 0.5],
-                 isLearnable=False):
+                 isLearnable=False, channelDivide=False):
         super(myZiT, self).__init__()
         self.data_bn = nn.BatchNorm1d(num_person * in_channels * num_point)
         bn_init(self.data_bn, 1)
@@ -860,29 +883,35 @@ class myZiT(nn.Module):
                                residual=False)  # only contain A[0] (adjacency matrix)
         self.layers = nn.ModuleList()
 
-        self.l2 = Temporal_Spatial_Trans_unit(48, 48, spatial_heads=spatial_heads, temporal_heads=temporal_heads,
-                                              expert_windows_size=expert_windows_size, num_frames=self.num_frames,
-                                              expert_weights=expert_weights, isLearnable=isLearnable)
+        # self.l2 = Temporal_Spatial_Trans_unit(48, 48, spatial_heads=spatial_heads, temporal_heads=temporal_heads,
+        #                                       expert_windows_size=expert_windows_size, num_frames=self.num_frames,
+        #                                       expert_weights=expert_weights, isLearnable=isLearnable,
+        #                                       channelDivide=channelDivide)
         self.l3 = Temporal_Spatial_Trans_unit(48, 48, spatial_heads=spatial_heads, temporal_heads=temporal_heads,
                                               expert_windows_size=expert_windows_size, num_frames=self.num_frames,
-                                              expert_weights=expert_weights, isLearnable=isLearnable)
+                                              expert_weights=expert_weights, isLearnable=isLearnable,
+                                              channelDivide=channelDivide)
         self.l4 = Temporal_Spatial_Trans_unit(48, 96, spatial_heads=spatial_heads, temporal_heads=temporal_heads,
                                               expert_windows_size=expert_windows_size,
                                               temporal_merge=True, num_frames=self.num_frames,
-                                              expert_weights=expert_weights, isLearnable=isLearnable)
+                                              expert_weights=expert_weights, isLearnable=isLearnable,
+                                              channelDivide=channelDivide)
         self.l5 = Temporal_Spatial_Trans_unit(96, 96, spatial_heads=spatial_heads, temporal_heads=temporal_heads * 2,
                                               expert_windows_size=expert_windows_size,
                                               num_frames=self.num_frames // 2,
-                                              expert_weights=expert_weights, isLearnable=isLearnable)
+                                              expert_weights=expert_weights, isLearnable=isLearnable,
+                                              channelDivide=channelDivide)
         self.l6 = Temporal_Spatial_Trans_unit(96, 192, spatial_heads=spatial_heads, temporal_heads=temporal_heads * 2,
                                               expert_windows_size=expert_windows_size,
                                               temporal_merge=True,
                                               num_frames=self.num_frames // 2,
-                                              expert_weights=expert_weights, isLearnable=isLearnable)
+                                              expert_weights=expert_weights, isLearnable=isLearnable,
+                                              channelDivide=channelDivide)
         self.l7 = Temporal_Spatial_Trans_unit(192, 192, spatial_heads=spatial_heads, temporal_heads=temporal_heads * 4,
                                               expert_windows_size=expert_windows_size,
                                               num_frames=self.num_frames // 4,
-                                              expert_weights=expert_weights, isLearnable=isLearnable)
+                                              expert_weights=expert_weights, isLearnable=isLearnable,
+                                              channelDivide=channelDivide)
 
     def forward(self, x):
         N, C, T, V, M = x.size()
@@ -1002,13 +1031,15 @@ class simple_test(nn.Module):
 class Model(nn.Module):
     def __init__(self, num_class=15, in_channels=3, num_person=5, num_point=18, num_head=6, graph=None,
                  graph_args=dict(), expert_windows_size=[8, 8],
-                 expert_weights=[0.5, 0.5], expert_weights_learnable=False):
+                 expert_weights=[0.5, 0.5], expert_weights_learnable=False, addMotion=False, channelDivide=False):
         super(Model, self).__init__()
 
+        self.addMotion = addMotion;
         self.body_transf = myZiT(in_channels=in_channels, num_person=num_person, num_point=num_point,
                                  graph=graph, graph_args=graph_args, num_frame=128,
                                  expert_windows_size=expert_windows_size,
-                                 expert_weights=expert_weights, isLearnable=expert_weights_learnable)
+                                 expert_weights=expert_weights, isLearnable=expert_weights_learnable,
+                                 channelDivide=channelDivide)
         self.group_transf = simpleZoT(num_class=num_class)
         # self.simple_test = simple_test()
 
@@ -1017,7 +1048,7 @@ class Model(nn.Module):
     def forward(self, x):
         # print("forward", x.shape)
         x = self.angular_feature.preprocessing_pingpong_coco(
-            x)  # add 9 channels with original 3 channels, total 12 channels.
+            x, self.addMotion)  # add 9 channels with original 3 channels, total 12 channels.
         # x = self.angular_feature.preprocessing_pingpong_coco_upper_body(
         #     x)  # add 9 channels with original 3 channels, total 12 channels.
         x = self.body_transf(x)

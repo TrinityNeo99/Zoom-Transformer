@@ -11,6 +11,7 @@
 """
 import torch
 import torch.nn as nn
+from einops import rearrange
 
 pingpong_coco_bone_angle_pairs = {
     3: (1, 0),
@@ -130,18 +131,12 @@ class Angular_feature:
             motion_diff = x[:, :3, 0, :, :] - x[:, :3, 0, :, :]
             for i in range(1, T):
                 motion_diff = x[:, :3, i, :, :] - x[:, :3, i - 1, :, :]
-                motion.append(motion_diff)
-            motion.append(motion_diff)  # the last one equal to the before
-            motion = torch.cat(motion, dim=2)  # cat along T dimension
+                motion.append(motion_diff.unsqueeze(2))
+            motion.append(motion_diff.unsqueeze(2))  # the last one equal to the before
+            motion = torch.cat(motion, dim=2).cpu()  # cat along T dimension
             all_list.append(motion)  # add motion feature
-
         all_list = torch.cat(all_list, dim=1)  # cat along feature C dimension
-        # print('All_list:', all_list.shape)
-        #
-        # print('x:', x.shape)
-
-        features = torch.cat((x, all_list.cuda()), dim=1)
-        # print('features:', features.shape)
+        features = torch.cat((x, all_list.cuda(x.device)), dim=1)
         return features
 
     def preprocessing_pingpong_coco_upper_body(self, x):

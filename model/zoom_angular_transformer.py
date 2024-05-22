@@ -730,7 +730,7 @@ class TemporalWindowPatchMerging(nn.Module):
 class Temporal_Spatial_Trans_unit(nn.Module):
     def __init__(self, in_channels, out_channels, spatial_heads=3, temporal_heads=3, stride=1, residual=True,
                  dropout=0.1, temporal_merge=False, expert_windows_size=[8, 8], num_frames=100, temporal_depth=2,
-                 spatial_depth=1, expert_weights=[0.5, 0.5]):
+                 spatial_depth=1, expert_weights=[0.5, 0.5], isLearnable=False):
         super(Temporal_Spatial_Trans_unit, self).__init__()
         self.S_trans = Transformer(dim=in_channels, depth=spatial_depth, heads=spatial_heads, mlp_dim=in_channels,
                                    dropout=dropout)
@@ -739,7 +739,11 @@ class Temporal_Spatial_Trans_unit(nn.Module):
             expert_weights = [1.0]
         assert len(expert_weights) == len(
             expert_windows_size), "the numbers of expert weights and their windows size are not equal"
-        expert_weights = torch.tensor(expert_weights)
+        if isLearnable:
+            self.expert_weights = nn.Parameter(torch.tensor(expert_weights))
+        else:
+            expert_weights = torch.tensor(expert_weights)
+            self.register_buffer("expert_weights", expert_weights)
         self.experts = nn.ModuleList()
         self.num_experts = len(expert_windows_size)
         self.temporal_merge = temporal_merge
@@ -762,7 +766,6 @@ class Temporal_Spatial_Trans_unit(nn.Module):
             self.residual = TemporalWindowPatchMerging(in_channels)
         elif temporal_merge == False:
             self.residual = lambda x: x
-        self.register_buffer("expert_weights", expert_weights)
 
     def forward(self, x, mask=None):
         B, C, T, V = x.size()
@@ -790,7 +793,8 @@ class Temporal_Spatial_Trans_unit(nn.Module):
 
 
 class ZiT(nn.Module):
-    def __init__(self, in_channels=3, num_person=5, num_point=18, num_head=6, graph=None, graph_args=dict()):
+    def __init__(self, in_channels=3, num_person=5, num_point=18, num_head=6, graph=None, graph_args=dict(),
+                 num_frame=100, embed_dim=48, depths=[2, 2, 2], expert_windows_size=[8, 8], expert_weights=[0.5, 0.5]):
         super(ZiT, self).__init__()
         self.data_bn = nn.BatchNorm1d(num_person * in_channels * num_point)
         bn_init(self.data_bn, 1)
@@ -835,7 +839,8 @@ class ZiT(nn.Module):
 class myZiT(nn.Module):
     def __init__(self, in_channels=3, num_person=5, num_point=18, spatial_heads=6, temporal_heads=3, graph=None,
                  graph_args=dict(),
-                 num_frame=100, embed_dim=48, depths=[2, 2, 2], expert_windows_size=[8, 8], expert_weights=[0.5, 0.5]):
+                 num_frame=100, embed_dim=48, depths=[2, 2, 2], expert_windows_size=[8, 8], expert_weights=[0.5, 0.5],
+                 isLearnable=False):
         super(myZiT, self).__init__()
         self.data_bn = nn.BatchNorm1d(num_person * in_channels * num_point)
         bn_init(self.data_bn, 1)
@@ -857,27 +862,27 @@ class myZiT(nn.Module):
 
         self.l2 = Temporal_Spatial_Trans_unit(48, 48, spatial_heads=spatial_heads, temporal_heads=temporal_heads,
                                               expert_windows_size=expert_windows_size, num_frames=self.num_frames,
-                                              expert_weights=expert_weights)
+                                              expert_weights=expert_weights, isLearnable=isLearnable)
         self.l3 = Temporal_Spatial_Trans_unit(48, 48, spatial_heads=spatial_heads, temporal_heads=temporal_heads,
                                               expert_windows_size=expert_windows_size, num_frames=self.num_frames,
-                                              expert_weights=expert_weights)
+                                              expert_weights=expert_weights, isLearnable=isLearnable)
         self.l4 = Temporal_Spatial_Trans_unit(48, 96, spatial_heads=spatial_heads, temporal_heads=temporal_heads,
                                               expert_windows_size=expert_windows_size,
                                               temporal_merge=True, num_frames=self.num_frames,
-                                              expert_weights=expert_weights)
+                                              expert_weights=expert_weights, isLearnable=isLearnable)
         self.l5 = Temporal_Spatial_Trans_unit(96, 96, spatial_heads=spatial_heads, temporal_heads=temporal_heads * 2,
                                               expert_windows_size=expert_windows_size,
                                               num_frames=self.num_frames // 2,
-                                              expert_weights=expert_weights)
+                                              expert_weights=expert_weights, isLearnable=isLearnable)
         self.l6 = Temporal_Spatial_Trans_unit(96, 192, spatial_heads=spatial_heads, temporal_heads=temporal_heads * 2,
                                               expert_windows_size=expert_windows_size,
                                               temporal_merge=True,
                                               num_frames=self.num_frames // 2,
-                                              expert_weights=expert_weights)
+                                              expert_weights=expert_weights, isLearnable=isLearnable)
         self.l7 = Temporal_Spatial_Trans_unit(192, 192, spatial_heads=spatial_heads, temporal_heads=temporal_heads * 4,
                                               expert_windows_size=expert_windows_size,
                                               num_frames=self.num_frames // 4,
-                                              expert_weights=expert_weights)
+                                              expert_weights=expert_weights, isLearnable=isLearnable)
 
     def forward(self, x):
         N, C, T, V, M = x.size()
@@ -925,13 +930,15 @@ class ZoT(nn.Module):
         conv_init(self.conv1)
         conv_init(self.conv2)
 
-        self.l1 = TCN_STRANSF_unit(192, 276, heads=num_head)  # 192 276
+        self.l1 = TCN_STRANSF_unit(12, 276, heads=num_head)  # 192 276
         self.l2 = TCN_STRANSF_unit(276, 276, heads=num_head)
 
         self.fc = nn.Linear(276, num_class)
         nn.init.normal_(self.fc.weight, 0, math.sqrt(2. / num_class))
 
     def forward(self, x):
+        # test
+        x = x.mean(3)
         # N,C,T,M
         x1 = self.conv1(x)
         x2 = self.conv2(x)
@@ -949,17 +956,61 @@ class ZoT(nn.Module):
         return self.fc(x)
 
 
+class simpleZoT(nn.Module):
+    def __init__(self, num_class=15, num_head=6):
+        super().__init__()
+        self.heads = num_head
+        self.l1 = TCN_STRANSF_unit(192, 276, heads=num_head)  # 192 276
+        self.l2 = TCN_STRANSF_unit(276, 276, heads=num_head)
+        self.fc = nn.Linear(276, num_class)
+        nn.init.normal_(self.fc.weight, 0, math.sqrt(2. / num_class))
+
+    def forward(self, x):
+        # test direct
+        # x = x.mean(3)
+        # N,C,T,M
+        x = self.l1(x)
+        x = self.l2(x)
+        x = x.mean(3).mean(2)
+        return self.fc(x)
+
+
+class simple_test(nn.Module):
+    def __init__(self, num_class=15, num_head=6):
+        super().__init__()
+        # self.heads = num_head
+        #
+        self.l1 = TCN_STRANSF_unit(12, 276, heads=num_head)  # 192 276
+        self.l2 = TCN_STRANSF_unit(276, 276, heads=num_head)
+
+        self.l3 = nn.Conv2d(12, 276, kernel_size=1)
+
+        self.fc = nn.Linear(276, num_class)
+        nn.init.normal_(self.fc.weight, 0, math.sqrt(2. / num_class))
+
+    def forward(self, x):
+        ## for test
+        N, C, T, V, M = x.size()
+
+        # N,C,T,M
+        x = self.l1(x)
+        x = self.l2(x)
+        x = x.mean(3).mean(2)
+        return self.fc(x)
+
+
 class Model(nn.Module):
     def __init__(self, num_class=15, in_channels=3, num_person=5, num_point=18, num_head=6, graph=None,
                  graph_args=dict(), expert_windows_size=[8, 8],
-                 expert_weights=[0.5, 0.5]):
+                 expert_weights=[0.5, 0.5], expert_weights_learnable=False):
         super(Model, self).__init__()
 
         self.body_transf = myZiT(in_channels=in_channels, num_person=num_person, num_point=num_point,
                                  graph=graph, graph_args=graph_args, num_frame=128,
                                  expert_windows_size=expert_windows_size,
-                                 expert_weights=expert_weights)
-        self.group_transf = ZoT(num_class=num_class)
+                                 expert_weights=expert_weights, isLearnable=expert_weights_learnable)
+        self.group_transf = simpleZoT(num_class=num_class)
+        # self.simple_test = simple_test()
 
         self.angular_feature = Angular_feature()
 
@@ -971,4 +1022,5 @@ class Model(nn.Module):
         #     x)  # add 9 channels with original 3 channels, total 12 channels.
         x = self.body_transf(x)
         x = self.group_transf(x)
+        # x = self.simple_test(x)
         return x

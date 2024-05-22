@@ -27,6 +27,9 @@ from tqdm import tqdm
 import wandb
 import math
 from datetime import datetime
+# from torchstat import stat
+from thop import profile
+from thop import clever_format
 
 sys.path.append("../")
 from Evaluate.evaluate import generate_confusion_matrix
@@ -259,11 +262,10 @@ class Processor():
         output_device = self.arg.device[0] if type(self.arg.device) is list else self.arg.device
         self.output_device = output_device
         Model = import_class(self.arg.model)
-
         shutil.copy2(inspect.getfile(Model), self.arg.work_dir)
-        print(Model)
+        # print(Model)
         self.model = Model(**self.arg.model_args).cuda(output_device)
-        print(self.model)
+        # print(self.model)
 
         # add weighted loss
         # weights = torch.FloatTensor([1.0, 1.0, 1.0, 3.0, 3.0, 1.0, 3.0, 3.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0])
@@ -417,10 +419,10 @@ class Processor():
                 l1 = l1.mean()
             else:
                 l1 = 0
-            loss = self.loss(output + 1e-8, label) + l1
-            if math.isnan(loss):
-                print(loss)
-                print(output)
+            loss = self.loss(output, label) + l1
+            # if math.isnan(loss):
+            #     print(loss)
+            #     print(output)
 
             # backward
             self.optimizer.zero_grad()
@@ -553,7 +555,23 @@ class Processor():
                         self.arg.work_dir, epoch + 1, ln), 'wb') as f:
                     pickle.dump(score_dict, f)
 
+    def calculate_params_flops(self):
+        dummy_input = torch.randn(1, 3, 128, 17, 1).cuda(self.output_device)
+        if len(self.arg.device) > 1:
+            flops, params = profile(self.model.module, inputs=(dummy_input,))
+        else:
+            flops, params = profile(self.model, inputs=(dummy_input,))
+        # flops, params = clever_format([flops, params], '%.3f')
+        flops = round(flops / (10 ** 9), 2)
+        params = round(params / (10 ** 6), 2)
+        wandb.log({"model_params": params})
+        wandb.log({"model_flops": flops})
+        print("params: ", params)
+        print("flops: ", flops)
+
     def start(self):
+        if len(self.arg.device) <= 1:
+            self.calculate_params_flops()
         if self.arg.phase == 'train':
             self.print_log('Parameters:\n{}\n'.format(str(vars(self.arg))))
             self.global_step = self.arg.start_epoch * len(self.data_loader['train']) / self.arg.batch_size

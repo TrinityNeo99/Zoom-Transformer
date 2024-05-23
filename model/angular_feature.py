@@ -81,7 +81,7 @@ class Angular_feature:
             the_joint = a_key
             a_adj = a_bone_value
             bone_diff = (x[:, :3, :, the_joint, :] -
-                         x[:, :3, :, a_adj, :]).unsqueeze(3).cpu()
+                         x[:, :3, :, a_adj, :]).unsqueeze(3)
             fp_sp_joint_list_bone.append(bone_diff)
 
             # bone angles
@@ -91,35 +91,35 @@ class Angular_feature:
             vec2 = x[:, :3, :, v2, :] - x[:, :3, :, the_joint, :]
             angular_feature = (1.0 - self.cos(vec1, vec2))
             angular_feature[angular_feature != angular_feature] = 0
-            fp_sp_joint_list_bone_angle.append(angular_feature.unsqueeze(2).unsqueeze(1).cpu())
+            fp_sp_joint_list_bone_angle.append(angular_feature.unsqueeze(2).unsqueeze(1))
 
             # two hand angle
             vec1 = x[:, :3, :, 9, :] - x[:, :3, :, the_joint, :]
             vec2 = x[:, :3, :, 10, :] - x[:, :3, :, the_joint, :]
             angular_feature = (1.0 - self.cos(vec1, vec2))
             angular_feature[angular_feature != angular_feature] = 0
-            fp_sp_two_hand_angle.append(angular_feature.unsqueeze(2).unsqueeze(1).cpu())
+            fp_sp_two_hand_angle.append(angular_feature.unsqueeze(2).unsqueeze(1))
 
             # two elbow angle
             vec1 = x[:, :3, :, 7, :] - x[:, :3, :, the_joint, :]
             vec2 = x[:, :3, :, 8, :] - x[:, :3, :, the_joint, :]
             angular_feature = (1.0 - self.cos(vec1, vec2))
             angular_feature[angular_feature != angular_feature] = 0
-            fp_sp_two_elbow_angle.append(angular_feature.unsqueeze(2).unsqueeze(1).cpu())
+            fp_sp_two_elbow_angle.append(angular_feature.unsqueeze(2).unsqueeze(1))
 
             # two knee angle
             vec1 = x[:, :3, :, 11, :] - x[:, :3, :, the_joint, :]
             vec2 = x[:, :3, :, 12, :] - x[:, :3, :, the_joint, :]
             angular_feature = (1.0 - self.cos(vec1, vec2))
             angular_feature[angular_feature != angular_feature] = 0
-            fp_sp_two_knee_angle.append(angular_feature.unsqueeze(2).unsqueeze(1).cpu())
+            fp_sp_two_knee_angle.append(angular_feature.unsqueeze(2).unsqueeze(1))
 
             # two feet angle
             vec1 = x[:, :3, :, 13, :] - x[:, :3, :, the_joint, :]
             vec2 = x[:, :3, :, 14, :] - x[:, :3, :, the_joint, :]
             angular_feature = (1.0 - self.cos(vec1, vec2))
             angular_feature[angular_feature != angular_feature] = 0
-            fp_sp_two_feet_angle.append(angular_feature.unsqueeze(2).unsqueeze(1).cpu())
+            fp_sp_two_feet_angle.append(angular_feature.unsqueeze(2).unsqueeze(1))
 
         for a_list_id in range(len(all_list)):
             all_list[a_list_id] = torch.cat(all_list[a_list_id], dim=3)  # cat along V dimension
@@ -133,7 +133,7 @@ class Angular_feature:
                 motion_diff = x[:, :3, i, :, :] - x[:, :3, i - 1, :, :]
                 motion.append(motion_diff.unsqueeze(2))
             motion.append(motion_diff.unsqueeze(2))  # the last one equal to the before
-            motion = torch.cat(motion, dim=2).cpu()  # cat along T dimension
+            motion = torch.cat(motion, dim=2)  # cat along T dimension
             all_list.append(motion)  # add motion feature
         all_list = torch.cat(all_list, dim=1)  # cat along feature C dimension
         features = torch.cat((x, all_list.cuda(x.device)), dim=1)

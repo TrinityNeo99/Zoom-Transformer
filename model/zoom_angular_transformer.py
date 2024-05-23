@@ -735,6 +735,8 @@ class Temporal_Spatial_Trans_unit(nn.Module):
         self.S_trans = Transformer(dim=in_channels, depth=spatial_depth, heads=spatial_heads, mlp_dim=in_channels,
                                    dropout=dropout)
         self.channelDivide = channelDivide
+        self.expert_weights_learnable_fc = nn.Softmax(dim=0)
+        self.expert_weights_learnable = isLearnable
 
         if len(expert_windows_size) == 1:
             expert_weights = [1.0]
@@ -773,6 +775,10 @@ class Temporal_Spatial_Trans_unit(nn.Module):
             self.residual = lambda x: x
 
     def forward(self, x, mask=None):
+        if self.expert_weights_learnable:
+            expert_weights = self.expert_weights_learnable_fc(self.expert_weights)
+        else:
+            expert_weights = self.expert_weights
         B, C, T, V = x.size()
         # print("x", x.shape)
         rx = rearrange(x, "b c t v -> (b v) t c")
@@ -782,9 +788,9 @@ class Temporal_Spatial_Trans_unit(nn.Module):
         sx = self.bn1(sx)
         tx = rearrange(sx, "(b v) c t -> (b v) t c", t=T, v=V)
         if self.channelDivide:
-            atx = self.T_multi_expert_channels(tx, B, C, T, V)
+            atx = self.T_multi_expert_channels(tx, B, C, T, V, expert_weights)
         else:
-            atx = self.T_multi_expert(tx, B, C, T, V)
+            atx = self.T_multi_expert(tx, B, C, T, V, expert_weights)
         stx = rearrange(atx, "(b v) t c -> b c t v", v=V)
         stx = self.bn2(stx)
         stx = self.drop(stx)
@@ -793,17 +799,17 @@ class Temporal_Spatial_Trans_unit(nn.Module):
         stx = stx + rx
         return self.relu(stx)
 
-    def T_multi_expert(self, x, B, C, T, V):
+    def T_multi_expert(self, x, B, C, T, V, expert_weights):
         if self.temporal_merge:
             atx = torch.zeros(B * V, T // 2, C * 2)
         else:
             atx = torch.zeros(B * V, T, C)  # get experts' embedding dimension
         atx = atx.cuda(x.device)
         for i in range(self.num_experts):
-            atx += self.expert_weights[i] * self.experts[i](x)
+            atx += expert_weights[i] * self.experts[i](x)
         return atx
 
-    def T_multi_expert_channels(self, x, B, C, T, V):
+    def T_multi_expert_channels(self, x, B, C, T, V, expert_weights):
         # x : B T C
         if self.temporal_merge:
             atx = torch.zeros(B * V, T // 2, C * 2)
@@ -811,7 +817,7 @@ class Temporal_Spatial_Trans_unit(nn.Module):
             atx = torch.zeros(B * V, T, C)  # get experts' embedding dimension
         atx = atx.cuda(x.device)
         for i in range(self.num_experts):
-            atx[:, :, i::self.num_experts] = self.expert_weights[i] * self.experts[i](x[:, :, i::self.num_experts])
+            atx[:, :, i::self.num_experts] = expert_weights[i] * self.experts[i](x[:, :, i::self.num_experts])
         return atx
 
 
@@ -1031,10 +1037,13 @@ class simple_test(nn.Module):
 class Model(nn.Module):
     def __init__(self, num_class=15, in_channels=3, num_person=5, num_point=18, num_head=6, graph=None,
                  graph_args=dict(), expert_windows_size=[8, 8],
-                 expert_weights=[0.5, 0.5], expert_weights_learnable=False, addMotion=False, channelDivide=False):
+                 expert_weights=[0.5, 0.5], expert_weights_learnable=False, addMotion=False, channelDivide=False,
+                 onlyXYZ=False):
         super(Model, self).__init__()
-
-        self.addMotion = addMotion;
+        if in_channels == 3:
+            onlyXYZ = True
+        self.addMotion = addMotion
+        self.onlyXYZ = onlyXYZ
         self.body_transf = myZiT(in_channels=in_channels, num_person=num_person, num_point=num_point,
                                  graph=graph, graph_args=graph_args, num_frame=128,
                                  expert_windows_size=expert_windows_size,
@@ -1047,11 +1056,11 @@ class Model(nn.Module):
 
     def forward(self, x):
         # print("forward", x.shape)
-        x = self.angular_feature.preprocessing_pingpong_coco(
-            x, self.addMotion)  # add 9 channels with original 3 channels, total 12 channels.
-        # x = self.angular_feature.preprocessing_pingpong_coco_upper_body(
-        #     x)  # add 9 channels with original 3 channels, total 12 channels.
+        if self.onlyXYZ:
+            pass
+        else:
+            x = self.angular_feature.preprocessing_pingpong_coco(
+                x, self.addMotion)  # add 9 channels with original 3 channels, total 12 channels.
         x = self.body_transf(x)
         x = self.group_transf(x)
-        # x = self.simple_test(x)
         return x

@@ -10,6 +10,7 @@
 @Date: 2024/5/13 22:20 at PyCharm
 """
 import torch
+import torch.nn as nn
 
 
 class modelTest():
@@ -82,10 +83,18 @@ def test3():
     print(tx)
 
 
+def test4():
+    expert_weights = [0.1, 0.5]
+    e = torch.tensor(expert_weights)
+    fc = nn.Softmax(dim=0)
+    print(fc(e))
+
+
 if __name__ == '__main__':
     m = modelTest()
     # m.test()
     # m.mytest()
     # m.test_discrete()
-    test2()
-    test3()
+    # test2()
+    # test3()
+    test4()

@@ -55,6 +55,62 @@ pingpong_coco_bone_adj = {
     # 11: 12,
 }
 
+ntu_bone_angle_pairs = {
+    25: (24, 12),
+    24: (25, 12),
+    12: (24, 25),
+    11: (12, 10),
+    10: (11, 9),
+    9: (10, 21),
+    21: (9, 5),
+    5: (21, 6),
+    6: (5, 7),
+    7: (6, 8),
+    8: (23, 22),
+    22: (8, 23),
+    23: (8, 22),
+    3: (4, 21),
+    4: (4, 4),
+    2: (21, 1),
+    1: (17, 13),
+    17: (18, 1),
+    18: (19, 17),
+    19: (20, 18),
+    20: (20, 20),
+    13: (1, 14),
+    14: (13, 15),
+    15: (14, 16),
+    16: (16, 16)
+}
+
+ntu_bone_adj = {
+    25: 12,
+    24: 12,
+    12: 11,
+    11: 10,
+    10: 9,
+    9: 21,
+    21: 21,
+    5: 21,
+    6: 5,
+    7: 6,
+    8: 7,
+    22: 8,
+    23: 8,
+    3: 21,
+    4: 3,
+    2: 21,
+    1: 2,
+    17: 1,
+    18: 17,
+    19: 18,
+    20: 19,
+    13: 1,
+    14: 13,
+    15: 14,
+    16: 15
+}
+
 
 class Angular_feature:
     def __init__(self):
@@ -195,4 +251,105 @@ class Angular_feature:
 
         features = torch.cat((x, all_list.cuda()), dim=1)
         # print('features:', features.shape)
+        return features
+
+    def ntu_preprocessing(self, x):
+        # Extract Bone and Angular Features
+        fp_sp_joint_list_bone = []
+        fp_sp_joint_list_bone_angle = []
+        fp_sp_joint_list_body_center_angle_1 = []
+        fp_sp_joint_list_body_center_angle_2 = []
+        fp_sp_left_hand_angle = []
+        fp_sp_right_hand_angle = []
+        fp_sp_two_hand_angle = []
+        fp_sp_two_elbow_angle = []
+        fp_sp_two_knee_angle = []
+        fp_sp_two_feet_angle = []
+
+        all_list = [
+            fp_sp_joint_list_bone, fp_sp_joint_list_bone_angle, fp_sp_joint_list_body_center_angle_1,
+            fp_sp_joint_list_body_center_angle_2, fp_sp_left_hand_angle, fp_sp_right_hand_angle,
+            fp_sp_two_hand_angle, fp_sp_two_elbow_angle, fp_sp_two_knee_angle,
+            fp_sp_two_feet_angle
+        ]
+
+        for a_key in ntu_bone_angle_pairs:
+            a_angle_value = ntu_bone_angle_pairs[a_key]
+            a_bone_value = ntu_bone_adj[a_key]
+            the_joint = a_key - 1
+            a_adj = a_bone_value - 1
+            bone_diff = (x[:, :3, :, the_joint, :] -
+                         x[:, :3, :, a_adj, :]).unsqueeze(3)
+            fp_sp_joint_list_bone.append(bone_diff)
+
+            # bone angles
+            v1 = a_angle_value[0] - 1
+            v2 = a_angle_value[1] - 1
+            vec1 = x[:, :3, :, v1, :] - x[:, :3, :, the_joint, :]
+            vec2 = x[:, :3, :, v2, :] - x[:, :3, :, the_joint, :]
+            angular_feature = (1.0 - self.cos(vec1, vec2))
+            angular_feature[angular_feature != angular_feature] = 0
+            fp_sp_joint_list_bone_angle.append(angular_feature.unsqueeze(2).unsqueeze(1))
+
+            # body angles 1
+            vec1 = x[:, :3, :, 2 - 1, :] - x[:, :3, :, the_joint, :]
+            vec2 = x[:, :3, :, 21 - 1, :] - x[:, :3, :, the_joint, :]
+            angular_feature = (1.0 - self.cos(vec1, vec2))
+            angular_feature[angular_feature != angular_feature] = 0
+            fp_sp_joint_list_body_center_angle_1.append(angular_feature.unsqueeze(2).unsqueeze(1))
+
+            # body angles 2
+            vec1 = x[:, :3, :, the_joint, :] - x[:, :3, :, 21 - 1, :]
+            vec2 = x[:, :3, :, 2 - 1, :] - x[:, :3, :, 21 - 1, :]
+            angular_feature = (1.0 - self.cos(vec1, vec2))
+            angular_feature[angular_feature != angular_feature] = 0
+            fp_sp_joint_list_body_center_angle_2.append(angular_feature.unsqueeze(2).unsqueeze(1))
+
+            # left hand angle
+            vec1 = x[:, :3, :, 24 - 1, :] - x[:, :3, :, the_joint, :]
+            vec2 = x[:, :3, :, 25 - 1, :] - x[:, :3, :, the_joint, :]
+            angular_feature = (1.0 - self.cos(vec1, vec2))
+            angular_feature[angular_feature != angular_feature] = 0
+            fp_sp_left_hand_angle.append(angular_feature.unsqueeze(2).unsqueeze(1))
+
+            # right hand angle
+            vec1 = x[:, :3, :, 22 - 1, :] - x[:, :3, :, the_joint, :]
+            vec2 = x[:, :3, :, 23 - 1, :] - x[:, :3, :, the_joint, :]
+            angular_feature = (1.0 - self.cos(vec1, vec2))
+            angular_feature[angular_feature != angular_feature] = 0
+            fp_sp_right_hand_angle.append(angular_feature.unsqueeze(2).unsqueeze(1))
+
+            # two hand angle
+            vec1 = x[:, :3, :, 24 - 1, :] - x[:, :3, :, the_joint, :]
+            vec2 = x[:, :3, :, 22 - 1, :] - x[:, :3, :, the_joint, :]
+            angular_feature = (1.0 - self.cos(vec1, vec2))
+            angular_feature[angular_feature != angular_feature] = 0
+            fp_sp_two_hand_angle.append(angular_feature.unsqueeze(2).unsqueeze(1))
+
+            # two elbow angle
+            vec1 = x[:, :3, :, 10 - 1, :] - x[:, :3, :, the_joint, :]
+            vec2 = x[:, :3, :, 6 - 1, :] - x[:, :3, :, the_joint, :]
+            angular_feature = (1.0 - self.cos(vec1, vec2))
+            angular_feature[angular_feature != angular_feature] = 0
+            fp_sp_two_elbow_angle.append(angular_feature.unsqueeze(2).unsqueeze(1))
+
+            # two knee angle
+            vec1 = x[:, :3, :, 18 - 1, :] - x[:, :3, :, the_joint, :]
+            vec2 = x[:, :3, :, 14 - 1, :] - x[:, :3, :, the_joint, :]
+            angular_feature = (1.0 - self.cos(vec1, vec2))
+            angular_feature[angular_feature != angular_feature] = 0
+            fp_sp_two_knee_angle.append(angular_feature.unsqueeze(2).unsqueeze(1))
+
+            # two feet angle
+            vec1 = x[:, :3, :, 20 - 1, :] - x[:, :3, :, the_joint, :]
+            vec2 = x[:, :3, :, 16 - 1, :] - x[:, :3, :, the_joint, :]
+            angular_feature = (1.0 - self.cos(vec1, vec2))
+            angular_feature[angular_feature != angular_feature] = 0
+            fp_sp_two_feet_angle.append(angular_feature.unsqueeze(2).unsqueeze(1))
+
+        for a_list_id in range(len(all_list)):
+            all_list[a_list_id] = torch.cat(all_list[a_list_id], dim=3)
+
+        all_list = torch.cat(all_list, dim=1)
+        features = torch.cat((x, all_list.cuda(x.device)), dim=1)
         return features

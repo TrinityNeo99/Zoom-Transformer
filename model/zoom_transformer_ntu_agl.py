@@ -8,6 +8,7 @@ import torch
 import torch.nn as nn
 from torch.autograd import Variable
 import torch.nn.functional as F
+from model.angular_feature import Angular_feature
 
 
 def import_class(name):
@@ -325,7 +326,7 @@ class ZiT(nn.Module):
             self.graph = Graph(**graph_args)
 
         self.A = torch.from_numpy(self.graph.A[0].astype(np.float32))
-        self.l1 = TCN_GCN_unit(3, 48, self.graph.A, residual=False)
+        self.l1 = TCN_GCN_unit(in_channels, 48, self.graph.A, residual=False)
         self.l2 = TCN_STRANSF_unit(48, 48, heads=num_head, mask=self.A, mask_grad=False)
         self.l3 = TCN_STRANSF_unit(48, 48, heads=num_head, mask=self.A, mask_grad=False)
         self.l4 = TCN_STRANSF_unit(48, 96, heads=num_head, stride=2, mask=self.A, mask_grad=True)
@@ -390,15 +391,16 @@ class ZoT(nn.Module):
 
 
 class Model(nn.Module):
-    def __init__(self, num_class=15, in_channels=3, num_person=5, num_point=18, num_head=6, graph=None,
-                 graph_args=dict(), num_frame=300):
+    def __init__(self, num_class=15, in_channels=3, num_person=5, num_point=18, num_frame=128, num_head=6, graph=None,
+                 graph_args=dict()):
         super(Model, self).__init__()
-
         self.body_transf = ZiT(in_channels=in_channels, num_person=num_person, num_point=num_point, num_head=num_head,
                                graph=graph, graph_args=graph_args)
         self.group_transf = ZoT(num_class=num_class, num_head=num_head)
+        self.angular_feature = Angular_feature()
 
     def forward(self, x):
+        x = self.angular_feature.ntu_preprocessing(x)
         x = self.body_transf(x)
         x = self.group_transf(x)
 

@@ -1035,17 +1035,18 @@ class simple_test(nn.Module):
 
 
 class Model(nn.Module):
-    def __init__(self, num_class=15, in_channels=3, num_person=5, num_point=18, num_head=6, graph=None,
+    def __init__(self, num_class=15, in_channels=3, num_person=5, num_point=18, num_frame=128, num_head=6, graph=None,
                  graph_args=dict(), expert_windows_size=[8, 8],
                  expert_weights=[0.5, 0.5], expert_weights_learnable=False, addMotion=False, channelDivide=False,
-                 onlyXYZ=False):
+                 onlyXYZ=False, dataset="p2a"):
         super(Model, self).__init__()
         if in_channels == 3:
             onlyXYZ = True
         self.addMotion = addMotion
         self.onlyXYZ = onlyXYZ
+        self.dataset = dataset
         self.body_transf = myZiT(in_channels=in_channels, num_person=num_person, num_point=num_point,
-                                 graph=graph, graph_args=graph_args, num_frame=128,
+                                 graph=graph, graph_args=graph_args, num_frame=num_frame,
                                  expert_windows_size=expert_windows_size,
                                  expert_weights=expert_weights, isLearnable=expert_weights_learnable,
                                  channelDivide=channelDivide)
@@ -1058,9 +1059,11 @@ class Model(nn.Module):
         # print("forward", x.shape)
         if self.onlyXYZ:
             pass
-        else:
+        elif self.dataset == "p2a":
             x = self.angular_feature.preprocessing_pingpong_coco(
-                x, self.addMotion)  # add 9 channels with original 3 channels, total 12 channels.
+                x, self.addMotion)  # add 9 channels with original 3 channels, total 12 channels, all = 12
+        elif self.dataset == "ntu-60" or self.dataset == "ntu-120":
+            x = self.angular_feature.ntu_preprocessing(x)  # add 12 channels with original 3 channels, all = 15
         x = self.body_transf(x)
         x = self.group_transf(x)
         return x

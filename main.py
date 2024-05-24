@@ -555,8 +555,9 @@ class Processor():
                         self.arg.work_dir, epoch + 1, ln), 'wb') as f:
                     pickle.dump(score_dict, f)
 
-    def calculate_params_flops(self):
-        dummy_input = torch.randn(2, 3, 128, 17, 1).cuda(self.output_device)
+    def calculate_params_flops(self, in_channel, num_frame, num_keypoint, num_person):
+        # N, C, T, V, M
+        dummy_input = torch.randn(1, in_channel, num_frame, num_keypoint, num_person).cuda(self.output_device)
         if isinstance(self.arg.device, list) and len(self.arg.device) > 1:
             flops, params = profile(self.model.module, inputs=(dummy_input,))
         else:
@@ -571,7 +572,10 @@ class Processor():
 
     def start(self):
         if isinstance(self.arg.device, int) or len(self.arg.device) <= 1:
-            self.calculate_params_flops()
+            self.calculate_params_flops(3,
+                                        self.arg.model_args['num_frame'],
+                                        self.arg.model_args['num_point'],
+                                        self.arg.model_args['num_person'])
         if self.arg.phase == 'train':
             self.print_log('Parameters:\n{}\n'.format(str(vars(self.arg))))
             self.global_step = self.arg.start_epoch * len(self.data_loader['train']) / self.arg.batch_size

@@ -20,7 +20,6 @@ import torch.backends.cudnn as cudnn
 import torch.nn as nn
 import torch.optim as optim
 import yaml
-from tensorboardX import SummaryWriter
 from torch.autograd import Variable
 from torch.optim.lr_scheduler import _LRScheduler
 from tqdm import tqdm
@@ -272,7 +271,6 @@ class Processor():
         self.loss = nn.CrossEntropyLoss().cuda(output_device)
 
         if self.arg.weights:
-            self.global_step = int(arg.weights[:-3].split('-')[-1])
             self.print_log('Load weights from {}.'.format(self.arg.weights))
             if '.pkl' in self.arg.weights:
                 with open(self.arg.weights, 'r') as f:
@@ -559,6 +557,7 @@ class Processor():
         # N, C, T, V, M
         dummy_input = torch.randn(1, in_channel, num_frame, num_keypoint, num_person).cuda(self.output_device)
         if isinstance(self.arg.device, list) and len(self.arg.device) > 1:
+            print(self.model.module)
             flops, params = profile(self.model.module, inputs=(dummy_input,))
         else:
             flops, params = profile(self.model, inputs=(dummy_input,))
@@ -571,7 +570,7 @@ class Processor():
         print("flops: ", flops)
 
     def start(self):
-        if isinstance(self.arg.device, int) or len(self.arg.device) <= 1:
+        if isinstance(self.arg.device, int):
             self.calculate_params_flops(3,
                                         self.arg.model_args['num_frame'],
                                         self.arg.model_args['num_point'],

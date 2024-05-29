@@ -243,7 +243,8 @@ class Attention(nn.Module):
 
         if mask is not None:
             assert mask.shape[-1] == dots.shape[-1], 'mask has incorrect dimensions'
-            dots = (dots + mask) * 0.5
+            # dots = (dots + mask) * 0.5
+            pass
 
         attn = dots.softmax(dim=-1)  # follow the softmax,q,d,v equation in the paper
 

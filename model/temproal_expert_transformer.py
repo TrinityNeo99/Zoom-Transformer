@@ -725,7 +725,7 @@ class Temporal_Spatial_Trans_unit(nn.Module):
     def __init__(self, in_channels, out_channels, spatial_heads=3, temporal_heads=3, stride=1, residual=True,
                  dropout=0.1, temporal_merge=False, expert_windows_size=[8, 8], num_frames=100, temporal_depth=2,
                  spatial_depth=1, expert_weights=[0.5, 0.5], isLearnable=False, channelDivide=False,
-                 spatial_mask=None):
+                 spatial_mask=None, temporal_ape=False):
         super(Temporal_Spatial_Trans_unit, self).__init__()
         if spatial_mask == None:
             self.spatial_mask = None
@@ -756,7 +756,7 @@ class Temporal_Spatial_Trans_unit(nn.Module):
                               heads=temporal_heads,
                               temporal_merge=temporal_merge, window_size=expert_windows_size[i],
                               num_frames=num_frames,
-                              ape=False, depth=temporal_depth))
+                              ape=temporal_ape, depth=temporal_depth))
 
         # TODO ape
         self.relu = nn.ReLU()
@@ -880,7 +880,7 @@ class myZiT(nn.Module):
     def __init__(self, in_channels=3, num_person=5, num_point=18, spatial_heads=6, temporal_heads=3, graph=None,
                  graph_args=dict(),
                  num_frame=100, embed_dim=48, depths=[2, 2, 2], expert_windows_size=[8, 8], expert_weights=[0.5, 0.5],
-                 isLearnable=False, channelDivide=False, add_spatial_mask=False):
+                 isLearnable=False, channelDivide=False, add_spatial_mask=False, temporal_ape=False):
         super(myZiT, self).__init__()
         self.data_bn = nn.BatchNorm1d(num_person * in_channels * num_point)
         bn_init(self.data_bn, 1)
@@ -908,32 +908,37 @@ class myZiT(nn.Module):
                                               expert_windows_size=expert_windows_size, num_frames=self.num_frames,
                                               expert_weights=expert_weights, isLearnable=isLearnable,
                                               channelDivide=channelDivide,
-                                              spatial_mask=self.A if add_spatial_mask else None)
+                                              spatial_mask=self.A if add_spatial_mask else None,
+                                              temporal_ape=temporal_ape)
         self.l4 = Temporal_Spatial_Trans_unit(48, 96, spatial_heads=spatial_heads, temporal_heads=temporal_heads,
                                               expert_windows_size=expert_windows_size,
                                               temporal_merge=True, num_frames=self.num_frames,
                                               expert_weights=expert_weights, isLearnable=isLearnable,
                                               channelDivide=channelDivide,
-                                              spatial_mask=self.A if add_spatial_mask else None)
+                                              spatial_mask=self.A if add_spatial_mask else None,
+                                              temporal_ape=temporal_ape)
         self.l5 = Temporal_Spatial_Trans_unit(96, 96, spatial_heads=spatial_heads, temporal_heads=temporal_heads * 2,
                                               expert_windows_size=expert_windows_size,
                                               num_frames=self.num_frames // 2,
                                               expert_weights=expert_weights, isLearnable=isLearnable,
                                               channelDivide=channelDivide,
-                                              spatial_mask=self.A if add_spatial_mask else None)
+                                              spatial_mask=self.A if add_spatial_mask else None,
+                                              temporal_ape=temporal_ape)
         self.l6 = Temporal_Spatial_Trans_unit(96, 192, spatial_heads=spatial_heads, temporal_heads=temporal_heads * 2,
                                               expert_windows_size=expert_windows_size,
                                               temporal_merge=True,
                                               num_frames=self.num_frames // 2,
                                               expert_weights=expert_weights, isLearnable=isLearnable,
                                               channelDivide=channelDivide,
-                                              spatial_mask=self.A if add_spatial_mask else None)
+                                              spatial_mask=self.A if add_spatial_mask else None,
+                                              temporal_ape=temporal_ape)
         self.l7 = Temporal_Spatial_Trans_unit(192, 192, spatial_heads=spatial_heads, temporal_heads=temporal_heads * 4,
                                               expert_windows_size=expert_windows_size,
                                               num_frames=self.num_frames // 4,
                                               expert_weights=expert_weights, isLearnable=isLearnable,
                                               channelDivide=channelDivide,
-                                              spatial_mask=self.A if add_spatial_mask else None)
+                                              spatial_mask=self.A if add_spatial_mask else None,
+                                              temporal_ape=temporal_ape)
 
     def forward(self, x):
         N, C, T, V, M = x.size()
@@ -1010,7 +1015,7 @@ class Model(nn.Module):
     def __init__(self, num_class=15, in_channels=3, num_person=5, num_point=18, num_frame=128, num_head=6, graph=None,
                  graph_args=dict(), expert_windows_size=[8, 8],
                  expert_weights=[0.5, 0.5], expert_weights_learnable=False, addMotion=False, channelDivide=False,
-                 onlyXYZ=False, dataset="p2a", addSpatialMask=False):
+                 onlyXYZ=False, dataset="p2a", addSpatialMask=False, temporalApe=False):
         super(Model, self).__init__()
         if in_channels == 3:
             onlyXYZ = True
@@ -1021,7 +1026,7 @@ class Model(nn.Module):
                                  graph=graph, graph_args=graph_args, num_frame=num_frame,
                                  expert_windows_size=expert_windows_size,
                                  expert_weights=expert_weights, isLearnable=expert_weights_learnable,
-                                 channelDivide=channelDivide, add_spatial_mask=addSpatialMask)
+                                 channelDivide=channelDivide, add_spatial_mask=addSpatialMask, temporal_ape=temporalApe)
         self.group_transf = simpleZoT(num_class=num_class)
         self.angular_feature = Angular_feature()
 

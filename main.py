@@ -271,6 +271,8 @@ class Processor():
         self.loss = nn.CrossEntropyLoss().cuda(output_device)
 
         if self.arg.weights:
+            current_epoch = int(os.path.basename(self.arg.weights).split("-")[1].replace(".pt", ""))
+            self.arg.start_epoch = current_epoch
             self.print_log('Load weights from {}.'.format(self.arg.weights))
             if '.pkl' in self.arg.weights:
                 with open(self.arg.weights, 'r') as f:
@@ -431,19 +433,9 @@ class Processor():
 
             value, predict_label = torch.max(output.data, 1)
             acc = torch.mean((predict_label == label.data).float())
-            # self.train_writer.add_scalar('acc', acc, self.global_step)
-            # self.train_writer.add_scalar('loss', loss.data.item(), self.global_step)
-            # self.train_writer.add_scalar('loss_l1', l1, self.global_step)
-            # self.train_writer.add_scalar('batch_time', process.iterable.last_duration, self.global_step)
 
             # statistics
             self.lr = self.optimizer.param_groups[0]['lr']
-
-            # self.train_writer.add_scalar('lr', self.lr, self.global_step)
-            # if self.global_step % self.arg.log_interval == 0:
-            #     self.print_log(
-            #         '\tBatch({}/{}) done. Loss: {:.4f}  lr:{:.6f}'.format(
-            #             batch_idx, len(loader), loss.data[0], lr))
             timer['statistics'] += self.split_time()
 
         # statistics of time consumption and loss
@@ -529,12 +521,6 @@ class Processor():
 
             # self.lr_scheduler.step(loss)
             print('Accuracy: ', accuracy, ' model: ', self.arg.model_saved_name)
-            if self.arg.phase == 'train':
-                # self.val_writer.add_scalar('loss', loss, self.global_step)
-                # self.val_writer.add_scalar('loss_l1', l1, self.global_step)
-                # self.val_writer.add_scalar('acc', accuracy, self.global_step)
-                pass
-
             wandb.log({"eval_total_loss": loss, "epoch": epoch})
             wandb.log({"Eval Best top-1 acc": 100 * self.best_acc, "epoch": epoch})
             wandb.log({"Eval Best top-5 acc": 100 * self.best_acc5, "epoch": epoch})
@@ -583,9 +569,6 @@ class Processor():
                 # if self.lr < 1e-4:
                 #     print("self.lr is too small: ", self.lr)
                 #     break
-                save_model = ((epoch + 1) % self.arg.save_interval == 0) or (
-                        epoch + 1 == self.arg.num_epoch)
-
                 self.train(epoch, save_model=True)
 
                 self.eval(

@@ -413,13 +413,14 @@ class Processor():
             timer['dataloader'] += self.split_time()
 
             # forward
-            output = self.model(data)
+            output, zloss = self.model(data)
             if isinstance(output, tuple):
                 output, l1 = output
                 l1 = l1.mean()
             else:
                 l1 = 0
             loss = self.loss(output, label) + l1
+            loss += zloss.mean()  # 多卡的自定义loss
             # if math.isnan(loss):
             #     print(loss)
             #     print(output)
@@ -429,6 +430,8 @@ class Processor():
             loss.backward()
             self.optimizer.step()
             loss_value.append(loss.data.item())
+            wandb.log({"train_zloss": zloss.mean()})
+            wandb.log({"train_step_loss": loss})
             timer['model'] += self.split_time()
 
             value, predict_label = torch.max(output.data, 1)
@@ -484,7 +487,7 @@ class Processor():
                         label.long().cuda(self.output_device),
                         requires_grad=False,
                         volatile=True)
-                    output = self.model(data)
+                    output, zloss = self.model(data)
                     if isinstance(output, tuple):
                         output, l1 = output
                         l1 = l1.mean()
@@ -611,10 +614,10 @@ def import_class(name):
 
 
 def wandb_init(args):
-    wandb.login(key="bc22e6220c728740eef0df1af4695d3bd63ec155", force=True)
+    wandb.login(key="610ea58ece04cbfb08fe53c2d852fccf1833d910", force=True)
     wandb.init(
         # set the wandb project where this run will be logged
-        project="sports_action_recognition",
+        project="action_recognition",
         # name="ASE_GCN_baseline",
         name=args.model_saved_name,
         # track hyperparameters and run metadata
@@ -691,6 +694,8 @@ def bodypart_sweep_train():
     processor.start()
     wandb.finish()
 
+
+# wandb.mode = "offline"
 
 if __name__ == '__main__':
     parser = get_parser()

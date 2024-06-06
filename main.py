@@ -306,6 +306,8 @@ class Processor():
 
         self.calculate_params_flops(3, self.arg.model_args['num_frame'], self.arg.model_args['num_point'],
                                     self.arg.model_args['num_person'], Model(**self.arg.model_args).cuda(output_device))
+        # self.profile_model(3, self.arg.model_args['num_frame'], self.arg.model_args['num_point'],
+        #                    self.arg.model_args['num_person'], Model(**self.arg.model_args).cuda(output_device))
 
         if type(self.arg.device) is list:
             if len(self.arg.device) > 1:
@@ -402,6 +404,8 @@ class Processor():
                     if 'PA' in key:
                         value.requires_grad = False
                         # print(key + '-not require grad')
+        # with torch.autograd.profiler.profile(enabled=True, use_cuda=True, record_shapes=False,
+        #                                      profile_memory=False) as prof:
         for batch_idx, (data, label, index) in enumerate(process):
             self.global_step += 1
             with torch.no_grad():
@@ -409,21 +413,20 @@ class Processor():
                 label = label.long().cuda(self.output_device)
             timer['dataloader'] += self.split_time()
             # forward
-            output, zloss = self.model(data)
+            output = self.model(data)
             if isinstance(output, tuple):
-                output, l1 = output
-                l1 = l1.mean()
+                output, aux_loss = output
+                aux_loss = aux_loss.mean()
             else:
-                l1 = 0
-            loss = self.loss(output, label) + l1
-            loss += zloss.mean()  # 多卡的自定义loss
+                aux_loss = 0
+            loss = self.loss(output, label) + aux_loss
 
             # backward
             self.optimizer.zero_grad()
             loss.backward()
             self.optimizer.step()
             loss_value.append(loss.data.item())
-            wandb.log({"train_zloss": zloss.mean()})
+            # wandb.log({"train_zloss": zloss.mean()})
             wandb.log({"train_step_loss": loss})
             timer['model'] += self.split_time()
 
@@ -433,6 +436,13 @@ class Processor():
             # statistics
             self.lr = self.optimizer.param_groups[0]['lr']
             timer['statistics'] += self.split_time()
+
+            # profile
+            # if batch_idx > 10:
+            #     break
+            # print(prof.table())
+            # prof.export_chrome_trace('./profile.json')
+            # exit(1)
 
         # statistics of time consumption and loss
         proportion = {
@@ -477,12 +487,12 @@ class Processor():
                         label.long().cuda(self.output_device),
                         requires_grad=False,
                         volatile=True)
-                    output, zloss = self.model(data)
+                    output = self.model(data)
                     if isinstance(output, tuple):
-                        output, l1 = output
-                        l1 = l1.mean()
+                        output, aux_loss = output
+                        aux_loss = aux_loss.mean()
                     else:
-                        l1 = 0
+                        aux_loss = 0
                     loss = self.loss(output, label)
                     score_frag.append(output.data.cpu().numpy())
                     loss_value.append(loss.data.item())
@@ -544,6 +554,25 @@ class Processor():
         print("params: ", params)
         print("flops: ", flops)
         del model
+        del dummy_input
+
+    def profile_model(self, in_channel, num_frame, num_keypoint, num_person, model):
+        print(self.output_device)
+        dummy_input = torch.randn(2, in_channel, num_frame, num_keypoint, num_person).cuda(self.output_device)
+        # Warn-up
+        for _ in range(50):
+            start = time.time()
+            outputs = model(dummy_input)
+            torch.cuda.synchronize()
+            end = time.time()
+            print('Time:{}ms'.format((end - start) * 1000))
+        with torch.autograd.profiler.profile(enabled=True, use_cuda=True, record_shapes=True,
+                                             profile_memory=False) as prof:
+            outputs = model(dummy_input)
+        print(prof.table())
+        prof.export_chrome_trace('./profile.json')
+        del model
+        del dummy_input
 
     def start(self):
         if self.arg.phase == 'train':
@@ -693,7 +722,6 @@ if __name__ == '__main__':
                 print('WRONG ARG: {}'.format(k))
                 assert (k in key)
         parser.set_defaults(**default_arg)
-
     arg = parser.parse_args()
     if not os.path.exists(arg.work_dir):
         os.mkdir(arg.work_dir)
@@ -703,6 +731,7 @@ if __name__ == '__main__':
     init_seed(0)
     arg.work_dir = current_work_dir
     wandb_init(args=arg)
+    print("num_workers: ", arg.num_worker)
     processor = Processor(arg)
     processor.start()
     wandb.finish()

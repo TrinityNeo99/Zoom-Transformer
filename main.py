@@ -304,6 +304,9 @@ class Processor():
                 state.update(weights)
                 self.model.load_state_dict(state)
 
+        self.calculate_params_flops(3, self.arg.model_args['num_frame'], self.arg.model_args['num_point'],
+                                    self.arg.model_args['num_person'], Model(**self.arg.model_args).cuda(output_device))
+
         if type(self.arg.device) is list:
             if len(self.arg.device) > 1:
                 self.model = nn.DataParallel(
@@ -382,8 +385,6 @@ class Processor():
         self.print_log('Training epoch: {}'.format(epoch + 1))
         loader = self.data_loader['train']
         self.adjust_learning_rate(epoch, self.arg.gamma)
-        # for name, param in self.model.named_parameters():
-        #     self.train_writer.add_histogram(name, param.clone().cpu().data.numpy(), epoch)
         loss_value = []
         self.record_time()
         timer = dict(dataloader=0.001, model=0.001, statistics=0.001)
@@ -402,16 +403,11 @@ class Processor():
                         value.requires_grad = False
                         # print(key + '-not require grad')
         for batch_idx, (data, label, index) in enumerate(process):
-            # print(data.shape)
             self.global_step += 1
-            # # get data
-            # data = Variable(data.float().cuda(self.output_device), requires_grad=False)
-            # label = Variable(label.long().cuda(self.output_device), requires_grad=False)
             with torch.no_grad():
                 data = data.float().cuda(self.output_device)
                 label = label.long().cuda(self.output_device)
             timer['dataloader'] += self.split_time()
-
             # forward
             output, zloss = self.model(data)
             if isinstance(output, tuple):
@@ -421,9 +417,6 @@ class Processor():
                 l1 = 0
             loss = self.loss(output, label) + l1
             loss += zloss.mean()  # 多卡的自定义loss
-            # if math.isnan(loss):
-            #     print(loss)
-            #     print(output)
 
             # backward
             self.optimizer.zero_grad()
@@ -472,9 +465,6 @@ class Processor():
         for ln in loader_name:
             loss_value = []
             score_frag = []
-            right_num_total = 0
-            total_num = 0
-            loss_total = 0
             step = 0
             process = tqdm(self.data_loader[ln])
             for batch_idx, (data, label, index) in enumerate(process):
@@ -542,14 +532,10 @@ class Processor():
                         self.arg.work_dir, epoch + 1, ln), 'wb') as f:
                     pickle.dump(score_dict, f)
 
-    def calculate_params_flops(self, in_channel, num_frame, num_keypoint, num_person):
+    def calculate_params_flops(self, in_channel, num_frame, num_keypoint, num_person, model):
         # N, C, T, V, M
         dummy_input = torch.randn(1, in_channel, num_frame, num_keypoint, num_person).cuda(self.output_device)
-        if isinstance(self.arg.device, list) and len(self.arg.device) > 1:
-            print(self.model.module)
-            flops, params = profile(self.model.module, inputs=(dummy_input,))
-        else:
-            flops, params = profile(self.model, inputs=(dummy_input,))
+        flops, params = profile(model, inputs=(dummy_input,))
         # flops, params = clever_format([flops, params], '%.3f')
         flops = round(flops / (10 ** 9), 2)
         params = round(params / (10 ** 6), 2)
@@ -557,13 +543,9 @@ class Processor():
         wandb.log({"model_flops": flops})
         print("params: ", params)
         print("flops: ", flops)
+        del model
 
     def start(self):
-        if isinstance(self.arg.device, int):
-            self.calculate_params_flops(3,
-                                        self.arg.model_args['num_frame'],
-                                        self.arg.model_args['num_point'],
-                                        self.arg.model_args['num_person'])
         if self.arg.phase == 'train':
             self.print_log('Parameters:\n{}\n'.format(str(vars(self.arg))))
             self.global_step = self.arg.start_epoch * len(self.data_loader['train']) / self.arg.batch_size

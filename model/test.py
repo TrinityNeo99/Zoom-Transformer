@@ -90,6 +90,12 @@ def test4():
     print(fc(e))
 
 
+def test5():
+    a = torch.tensor([4, 8, 16, 32])
+    a = torch.div(a, 2)
+    print(a)
+
+
 if __name__ == '__main__':
     m = modelTest()
     # m.test()
@@ -97,4 +103,4 @@ if __name__ == '__main__':
     # m.test_discrete()
     # test2()
     # test3()
-    test4()
+    test5()

@@ -9,3 +9,4 @@ from . import body_part_transformer
 from . import discrete_joint
 from . import zoom_transformer_ntu_agl
 from . import temproal_expert_transformer
+from . import MoE_temporal_expert_transformer

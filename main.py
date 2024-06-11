@@ -27,11 +27,14 @@ import wandb
 import math
 from datetime import datetime
 # from torchstat import stat
-from thop import profile
+from thop import profile as tprofile
 from thop import clever_format
 
 sys.path.append("../")
 from Evaluate.evaluate import generate_confusion_matrix
+
+# from torch.profiler import profile, record_function, ProfilerActivity
+torch.set_num_threads(2)
 
 
 # from thop import clever_format
@@ -406,6 +409,14 @@ class Processor():
                         # print(key + '-not require grad')
         # with torch.autograd.profiler.profile(enabled=True, use_cuda=True, record_shapes=False,
         #                                      profile_memory=False) as prof:
+        # with torch.profiler.profile(
+        #         schedule=torch.profiler.schedule(wait=2, warmup=2, active=6, repeat=1),
+        #         on_trace_ready=torch.profiler.tensorboard_trace_handler(dir_name='profile/'),
+        #         activities=[torch.profiler.ProfilerActivity.CPU, torch.profiler.ProfilerActivity.CUDA],
+        #         record_shapes=True,
+        #         profile_memory=True,
+        #         with_stack=True,
+        # ) as prof:
         for batch_idx, (data, label, index) in enumerate(process):
             self.global_step += 1
             with torch.no_grad():
@@ -427,7 +438,7 @@ class Processor():
             self.optimizer.step()
             loss_value.append(loss.data.item())
             # wandb.log({"train_zloss": zloss.mean()})
-            wandb.log({"train_step_loss": loss})
+            # wandb.log({"train_step_loss": loss})
             timer['model'] += self.split_time()
 
             value, predict_label = torch.max(output.data, 1)
@@ -436,13 +447,13 @@ class Processor():
             # statistics
             self.lr = self.optimizer.param_groups[0]['lr']
             timer['statistics'] += self.split_time()
+            # prof.step()
 
             # profile
             # if batch_idx > 10:
             #     break
-            # print(prof.table())
-            # prof.export_chrome_trace('./profile.json')
-            # exit(1)
+        # print(prof.key_averages(group_by_stack_n=5).table(sort_by="cuda_time_total", row_limit=10))
+        # exit(0)
 
         # statistics of time consumption and loss
         proportion = {
@@ -545,7 +556,7 @@ class Processor():
     def calculate_params_flops(self, in_channel, num_frame, num_keypoint, num_person, model):
         # N, C, T, V, M
         dummy_input = torch.randn(1, in_channel, num_frame, num_keypoint, num_person).cuda(self.output_device)
-        flops, params = profile(model, inputs=(dummy_input,))
+        flops, params = tprofile(model, inputs=(dummy_input,))
         # flops, params = clever_format([flops, params], '%.3f')
         flops = round(flops / (10 ** 9), 2)
         params = round(params / (10 ** 6), 2)
@@ -579,7 +590,6 @@ class Processor():
             self.print_log('Parameters:\n{}\n'.format(str(vars(self.arg))))
             self.global_step = self.arg.start_epoch * len(self.data_loader['train']) / self.arg.batch_size
             for epoch in range(self.arg.start_epoch, self.arg.num_epoch):
-                wandb.log({"epoch": epoch})
                 # if self.lr < 1e-4:
                 #     print("self.lr is too small: ", self.lr)
                 #     break

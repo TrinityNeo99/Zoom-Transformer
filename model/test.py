@@ -96,6 +96,14 @@ def test5():
     print(a)
 
 
+def test6():
+    expert_windows_size = [8, 16, 32]
+    temporal_merge = False
+    mergeSlow = True
+    a = [w // 2 for w in expert_windows_size] if temporal_merge and mergeSlow else expert_windows_size
+    print(a)
+
+
 if __name__ == '__main__':
     m = modelTest()
     # m.test()
@@ -103,4 +111,5 @@ if __name__ == '__main__':
     # m.test_discrete()
     # test2()
     # test3()
-    test5()
+    # test5()
+    test6()

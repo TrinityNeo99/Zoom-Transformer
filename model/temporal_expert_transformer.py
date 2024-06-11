@@ -988,7 +988,7 @@ class myZiT(nn.Module):
                  num_frame=100, embed_dim=48, expert_windows_size=[8, 8], expert_weights=[0.5, 0.5],
                  isLearnable=False, channelDivide=False, add_spatial_mask=False, temporal_ape=False,
                  layer_temporal_depths=[2, 2, 2, 2, 2],
-                 block_structure=[[48, 48], [48, 96], [96, 96], [92, 192], [192, 192]]):
+                 block_structure=[[48, 48], [48, 96], [96, 96], [92, 192], [192, 192]], mergeSlow=False):
         super().__init__()
         self.data_bn = nn.BatchNorm1d(num_person * in_channels * num_point)
         bn_init(self.data_bn, 1)
@@ -1015,7 +1015,8 @@ class myZiT(nn.Module):
             num_frame_ratio = hyper_paras[0] // base_feature_dim
             self.layers.append(Temporal_Spatial_Trans_unit(hyper_paras[0], hyper_paras[1], spatial_heads=spatial_heads,
                                                            temporal_heads=temporal_heads * num_frame_ratio,
-                                                           expert_windows_size=expert_windows_size,
+                                                           expert_windows_size=[w // 2 for w in
+                                                                                expert_windows_size] if temporal_merge and mergeSlow else expert_windows_size,
                                                            num_frames=self.num_frames // num_frame_ratio,
                                                            expert_weights=expert_weights, isLearnable=isLearnable,
                                                            channelDivide=channelDivide,
@@ -1133,7 +1134,7 @@ class Model(nn.Module):
                  ZiTstrct=[[48, 96], [96, 192], [192, 192]], ZiT_layer_temporal_depths=[2, 2, 2, 2, 2], ZoTType="org",
                  ZoTTstrct=[[192, 192]], ZoT_layer_temporal_depths=[2], ZoT_spatial_depth=1,
                  addMotion=False, channelDivide=False, onlyXYZ=False, angularType="p2a",
-                 addSpatialMask=False, temporalApe=False
+                 addSpatialMask=False, temporalApe=False, mergeSlow=False,
                  ):
         super(Model, self).__init__()
         if in_channels == 3:
@@ -1149,7 +1150,7 @@ class Model(nn.Module):
                                  expert_weights=expert_weights, isLearnable=expert_weights_learnable,
                                  channelDivide=channelDivide, add_spatial_mask=addSpatialMask,
                                  temporal_ape=temporalApe, layer_temporal_depths=ZiT_layer_temporal_depths,
-                                 block_structure=ZiTstrct, embed_dim=48)
+                                 block_structure=ZiTstrct, embed_dim=48, mergeSlow=mergeSlow)
         if ZoTType == "direct":
             pass
         elif ZoTType == "org":

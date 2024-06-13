@@ -34,12 +34,18 @@ sys.path.append("../")
 from Evaluate.evaluate import generate_confusion_matrix
 
 # from torch.profiler import profile, record_function, ProfilerActivity
-torch.set_num_threads(2)
+
+# torch.set_num_threads(2)
+import torch.distributed as dist
+from torch.nn.parallel import DistributedDataParallel as DDP
+from ddp_function import distributed_concat, SequentialDistributedSampler
+
+dist.init_process_group(backend='nccl')
+from torch.cuda.amp import GradScaler, autocast
 
 
 # from thop import clever_format
 # from thop import profile
-
 
 class GradualWarmupScheduler(_LRScheduler):
     def __init__(self, optimizer, total_epoch, after_scheduler=None):
@@ -62,11 +68,12 @@ class GradualWarmupScheduler(_LRScheduler):
             return super(GradualWarmupScheduler, self).step(epoch)
 
 
-def init_seed(_):
-    torch.cuda.manual_seed_all(1)
-    torch.manual_seed(1)
-    np.random.seed(1)
-    random.seed(1)
+def init_seed(seed=0):
+    fix_seed = seed + 1
+    torch.cuda.manual_seed_all(fix_seed)
+    torch.manual_seed(fix_seed)
+    np.random.seed(fix_seed)
+    random.seed(fix_seed)
     # torch.backends.cudnn.enabled = False
     torch.backends.cudnn.deterministic = True
     torch.backends.cudnn.benchmark = False
@@ -204,6 +211,11 @@ def get_parser():
     parser.add_argument('--only_train_epoch', default=0)
     parser.add_argument('--warm_up_epoch', default=0)
     parser.add_argument('--dataset', default="p2a-14")
+
+    # DDP support
+    parser.add_argument("--DDP", default=False, action='store_true')
+    parser.add_argument("--local-rank", default=-1, type=int)
+    parser.add_argument("--local_rank", default=-1, type=int)
     return parser
 
 
@@ -240,41 +252,46 @@ class Processor():
         self.lr = self.arg.base_lr
         self.best_acc = 0
         self.best_acc5 = 0
+        self.scaler = GradScaler()
 
     def load_data(self):
         Feeder = import_class(self.arg.feeder)
         self.data_loader = dict()
-        if self.arg.phase == 'train':
-            self.data_loader['train'] = list(torch.utils.data.DataLoader(
+        if self.arg.phase == 'train' and self.arg.DDP:
+            train_dataset = Feeder(**self.arg.train_feeder_args)
+            self.train_sampler = torch.utils.data.distributed.DistributedSampler(train_dataset)
+            self.data_loader['train'] = torch.utils.data.DataLoader(
                 dataset=Feeder(**self.arg.train_feeder_args),
                 batch_size=self.arg.batch_size,
-                shuffle=True,
+                shuffle=False,
                 num_workers=self.arg.num_worker,
                 drop_last=True,
-                worker_init_fn=init_seed))
+                worker_init_fn=init_seed,
+                sampler=self.train_sampler,
+                pin_memory=True)
+
+        test_dataset = Feeder(**self.arg.test_feeder_args)
+        self.test_sampler = SequentialDistributedSampler(test_dataset, batch_size=self.arg.test_batch_size)
         self.data_loader['test'] = torch.utils.data.DataLoader(
             dataset=Feeder(**self.arg.test_feeder_args),
             batch_size=self.arg.test_batch_size,
             shuffle=False,
             num_workers=self.arg.num_worker,
             drop_last=False,
-            worker_init_fn=init_seed)
+            worker_init_fn=init_seed,
+            sampler=self.test_sampler,
+            pin_memory=True)
 
     def load_model(self):
-        output_device = self.arg.device[0] if type(self.arg.device) is list else self.arg.device
-        self.output_device = output_device
+        local_rank = self.arg.local_rank
+        torch.cuda.set_device(self.arg.local_rank)
         Model = import_class(self.arg.model)
         shutil.copy2(inspect.getfile(Model), self.arg.work_dir)
-        # print(Model)
-        self.model = Model(**self.arg.model_args).cuda(output_device)
-        # print(self.model)
-
-        # add weighted loss
-        # weights = torch.FloatTensor([1.0, 1.0, 1.0, 3.0, 3.0, 1.0, 3.0, 3.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0])
-        self.loss = nn.CrossEntropyLoss().cuda(output_device)
+        self.model = Model(**self.arg.model_args).to(local_rank)
+        self.loss = nn.CrossEntropyLoss().to(local_rank)
 
         if self.arg.weights:
-            current_epoch = int(os.path.basename(self.arg.weights).split("-")[1].replace(".pt", ""))
+            current_epoch = int(os.path.basename(self.arg.weights).split("-")[-1].replace(".pt", ""))
             self.arg.start_epoch = current_epoch
             self.print_log('Load weights from {}.'.format(self.arg.weights))
             if '.pkl' in self.arg.weights:
@@ -285,7 +302,7 @@ class Processor():
 
             weights = OrderedDict(
                 [[k.split('module.')[-1],
-                  v.cuda(output_device)] for k, v in weights.items()])
+                  v.to(local_rank)] for k, v in weights.items()])
 
             keys = list(weights.keys())
             for w in self.arg.ignore_weights:
@@ -308,16 +325,16 @@ class Processor():
                 self.model.load_state_dict(state)
 
         self.calculate_params_flops(3, self.arg.model_args['num_frame'], self.arg.model_args['num_point'],
-                                    self.arg.model_args['num_person'], Model(**self.arg.model_args).cuda(output_device))
+                                    self.arg.model_args['num_person'], Model(**self.arg.model_args).to(local_rank))
         # self.profile_model(3, self.arg.model_args['num_frame'], self.arg.model_args['num_point'],
         #                    self.arg.model_args['num_person'], Model(**self.arg.model_args).cuda(output_device))
 
-        if type(self.arg.device) is list:
-            if len(self.arg.device) > 1:
-                self.model = nn.DataParallel(
-                    self.model,
-                    device_ids=self.arg.device,
-                    output_device=output_device)
+        if self.arg.DDP:
+            self.model = self.model.to(local_rank)
+            self.model = DDP(self.model, device_ids=[local_rank], output_device=local_rank,
+                             find_unused_parameters=False)
+        else:
+            raise Exception("not DDP")
 
     def load_optimizer(self):
         if self.arg.optimizer == 'SGD':
@@ -391,6 +408,7 @@ class Processor():
         loader = self.data_loader['train']
         self.adjust_learning_rate(epoch, self.arg.gamma)
         loss_value = []
+        accs = []
         self.record_time()
         timer = dict(dataloader=0.001, model=0.001, statistics=0.001)
         process = tqdm(loader)
@@ -419,47 +437,47 @@ class Processor():
         # ) as prof:
         for batch_idx, (data, label, index) in enumerate(process):
             self.global_step += 1
-            with torch.no_grad():
-                data = data.float().cuda(self.output_device)
-                label = label.long().cuda(self.output_device)
+            data = data.float().to(self.arg.local_rank)
+            label = label.long().to(self.arg.local_rank)
             timer['dataloader'] += self.split_time()
-            # forward
-            output = self.model(data)
-            if isinstance(output, tuple):
-                output, aux_loss = output
-                aux_loss = aux_loss.mean()
-            else:
-                aux_loss = 0
-            loss = self.loss(output, label) + aux_loss
+            with autocast():
+                # forward
+                output = self.model(data)
+                if isinstance(output, tuple):
+                    output, aux_loss = output
+                    aux_loss = aux_loss.mean()
+                else:
+                    aux_loss = 0
+                loss = self.loss(output, label) + aux_loss
 
             # backward
-            self.optimizer.zero_grad()
-            loss.backward()
-            for name, param in self.model.named_parameters():
-                if param.grad is None:
-                    print(name)
-            self.optimizer.step()
-            loss_value.append(loss.data.item())
-            # wandb.log({"train_zloss": zloss.mean()})
-            # wandb.log({"train_step_loss": loss})
-            timer['model'] += self.split_time()
 
+            self.optimizer.zero_grad()
+            self.scaler.scale(loss).backward()
+            grad_clip = False
+            if grad_clip:
+                max_norm = 1.0
+                self.scaler.unscale_(self.optimizer)
+                torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm)
+            self.scaler.step(self.optimizer)
+            self.scaler.update()
+            loss_value.append(loss.data.item())
+            timer['model'] += self.split_time()
             value, predict_label = torch.max(output.data, 1)
             acc = torch.mean((predict_label == label.data).float())
-
+            accs.append(acc)
             # statistics
             self.lr = self.optimizer.param_groups[0]['lr']
             timer['statistics'] += self.split_time()
             # prof.step()
-
+            if dist.get_rank() == 0:
+                wandb.log({"train_step_loss": loss.data.item()})
             # profile
             # if batch_idx > 10:
-            #     wandb.finish()
-            #     exit(0)
             #     break
         # print(prof.key_averages(group_by_stack_n=5).table(sort_by="cuda_time_total", row_limit=10))
         # exit(0)
-
+        accs = torch.tensor(accs).data.cpu().numpy()
         # statistics of time consumption and loss
         proportion = {
             k: '{:02d}%'.format(int(round(v * 100 / sum(timer.values()))))
@@ -470,111 +488,104 @@ class Processor():
         self.print_log(
             '\tTime consumption: [Data]{dataloader}, [Network]{model}'.format(
                 **proportion))
+        if dist.get_rank() == 0:
+            wandb.log({"train_total_loss": np.mean(loss_value), "epoch": epoch})
+            wandb.log({f"train_acc_top_1": 100 * np.mean(accs), "epoch": epoch})
+            wandb.log({"runing_lr": self.lr, "epoch": epoch})
 
-        wandb.log({"train_total_loss": np.mean(loss_value), "epoch": epoch})
-        wandb.log({f"train_acc_top_1": 100 * acc, "epoch": epoch})
-        wandb.log({"runing_lr": self.lr, "epoch": epoch})
-
-        if save_model:
+        if epoch % self.arg.save_interval == 0 and save_model and dist.get_rank() == 0:
             state_dict = self.model.state_dict()
             weights = OrderedDict([[k.split('module.')[-1],
                                     v.cpu()] for k, v in state_dict.items()])
             torch.save(weights, os.path.join(self.arg.work_dir, self.arg.model_saved_name + '-' + str(epoch) + '.pt'))
 
-    def eval(self, epoch, save_score=False, loader_name=['test'], wrong_file=None, result_file=None):
-        if wrong_file is not None:
-            f_w = open(wrong_file, 'w')
-        if result_file is not None:
-            f_r = open(result_file, 'w')
+    def eval(self, epoch, save_score=False, loader_name=['test']):
         self.model.eval()
         self.print_log('Eval epoch: {}'.format(epoch + 1))
         for ln in loader_name:
             loss_value = []
-            score_frag = []
-            step = 0
+            labels = []
+            predictions = []
             process = tqdm(self.data_loader[ln])
             for batch_idx, (data, label, index) in enumerate(process):
                 with torch.no_grad():
-                    data = Variable(
-                        data.float().cuda(self.output_device),
-                        requires_grad=False,
-                        volatile=True)
-                    label = Variable(
-                        label.long().cuda(self.output_device),
-                        requires_grad=False,
-                        volatile=True)
-                    output = self.model(data)
-                    if isinstance(output, tuple):
-                        output, aux_loss = output
-                        aux_loss = aux_loss.mean()
-                    else:
-                        aux_loss = 0
-                    loss = self.loss(output, label)
-                    score_frag.append(output.data.cpu().numpy())
-                    loss_value.append(loss.data.item())
+                    with autocast():
+                        data = data.float().to(self.arg.local_rank)
+                        label = label.long().to(self.arg.local_rank)
+                        output = self.model(data)
+                        if isinstance(output, tuple):
+                            output, aux_loss = output
+                            aux_loss = aux_loss.mean()
+                        else:
+                            aux_loss = 0
+                        loss = self.loss(output, label)
+                        predictions.append(output)
+                        labels.append(label)
+                        loss_value.append(loss.data.item())
+                    # if batch_idx > 10:
+                    #     break
 
-                    _, predict_label = torch.max(output.data, 1)
-                    step += 1
-
-                if wrong_file is not None or result_file is not None:
-                    predict = list(predict_label.cpu().numpy())
-                    true = list(label.data.cpu().numpy())
-                    for i, x in enumerate(predict):
-                        if result_file is not None:
-                            f_r.write(str(x) + ',' + str(true[i]) + '\n')
-                        if x != true[i] and wrong_file is not None:
-                            f_w.write(str(index[i]) + ',' + str(x) + ',' + str(true[i]) + '\n')
-            score = np.concatenate(score_frag)
-            loss = np.mean(loss_value)
-            accuracy = self.data_loader[ln].dataset.top_k(score, 1)
-            accuracy_top5 = self.data_loader[ln].dataset.top_k(score, 5)
+            predictions = distributed_concat(torch.cat(predictions, dim=0),
+                                             len(self.test_sampler.dataset))
+            labels = distributed_concat(torch.cat(labels, dim=0),
+                                        len(self.test_sampler.dataset))
+            scores = predictions.data.cpu().numpy()
+            labels = labels.data.cpu().numpy()
+            accuracy = self.data_loader[ln].dataset.top_k(scores, 1, labels)
+            accuracy_top5 = self.data_loader[ln].dataset.top_k(scores, 5, labels)
             if self.arg.dataset is not None:
                 dataset = self.arg.dataset
             if accuracy > self.best_acc:
                 self.best_acc = accuracy
-                predicted_labels = score.argsort()[:, -1]
-                generate_confusion_matrix(predicted_labels, self.data_loader[ln].dataset.label, dataset=dataset,
-                                          output_dir=self.arg.work_dir, epoch=epoch)
+                predicted_labels = scores.argsort()[:, -1]
+                if dist.get_rank() == 0:
+                    generate_confusion_matrix(predicted_labels, labels, dataset=dataset,
+                                              output_dir=self.arg.work_dir, epoch=epoch)
             if accuracy_top5 > self.best_acc5:
                 self.best_acc5 = accuracy_top5
 
+            mean_loss = np.mean(loss_value)
             # self.lr_scheduler.step(loss)
-            print('Accuracy: ', accuracy, ' model: ', self.arg.model_saved_name)
-            wandb.log({"eval_total_loss": loss, "epoch": epoch})
-            wandb.log({"Eval Best top-1 acc": 100 * self.best_acc, "epoch": epoch})
-            wandb.log({"Eval Best top-5 acc": 100 * self.best_acc5, "epoch": epoch})
-
+            print('Accuracy: ', round(accuracy * 100, 2), ' model: ', self.arg.model_saved_name)
             score_dict = dict(
-                zip(self.data_loader[ln].dataset.sample_name, score))
+                zip(self.data_loader[ln].dataset.sample_name[: len(scores)], scores))
             self.print_log('\tMean {} loss of {} batches: {}.'.format(
-                ln, len(self.data_loader[ln]), np.mean(loss_value)))
+                ln, len(self.data_loader[ln]), mean_loss))
+
             for k in self.arg.show_topk:
                 self.print_log('\tTop{}: {:.2f}%'.format(
-                    k, 100 * self.data_loader[ln].dataset.top_k(score, k)))
-                wandb.log({f"eval_acc_top_{k}": 100 * self.data_loader[ln].dataset.top_k(score, k), "epoch": epoch})
+                    k, 100 * self.data_loader[ln].dataset.top_k(scores, k, labels)))
 
             if save_score:
                 with open('{}/epoch{}_{}_score.pkl'.format(
                         self.arg.work_dir, epoch + 1, ln), 'wb') as f:
                     pickle.dump(score_dict, f)
 
+            if dist.get_rank() == 0:
+                wandb.log({"eval_total_loss": mean_loss, "epoch": epoch})
+                wandb.log({"Eval Best top-1 acc": 100 * self.best_acc, "epoch": epoch})
+                wandb.log({"Eval Best top-5 acc": 100 * self.best_acc5, "epoch": epoch})
+                for k in self.arg.show_topk:
+                    wandb.log(
+                        {f"eval_acc_top_{k}": 100 * self.data_loader[ln].dataset.top_k(scores, 1, labels),
+                         "epoch": epoch})
+
     def calculate_params_flops(self, in_channel, num_frame, num_keypoint, num_person, model):
         # N, C, T, V, M
-        dummy_input = torch.randn(1, in_channel, num_frame, num_keypoint, num_person).cuda(self.output_device)
+        dummy_input = torch.randn(1, in_channel, num_frame, num_keypoint, num_person).to(self.arg.local_rank)
         flops, params = tprofile(model, inputs=(dummy_input,))
         # flops, params = clever_format([flops, params], '%.3f')
         flops = round(flops / (10 ** 9), 2)
         params = round(params / (10 ** 6), 2)
-        wandb.log({"model_params": params})
-        wandb.log({"model_flops": flops})
-        print("params: ", params)
-        print("flops: ", flops)
+        if dist.get_rank() == 0:
+            wandb.log({"model_params": params})
+            wandb.log({"model_flops": flops})
         del model
         del dummy_input
 
     def profile_model(self, in_channel, num_frame, num_keypoint, num_person, model):
         print(self.output_device)
-        dummy_input = torch.randn(2, in_channel, num_frame, num_keypoint, num_person).cuda(self.output_device)
+        dummy_input = torch.randn(2, in_channel, num_frame, num_keypoint, num_person).to(self.arg.local_rank)
         # Warn-up
         for _ in range(50):
             start = time.time()
@@ -595,16 +606,13 @@ class Processor():
             self.print_log('Parameters:\n{}\n'.format(str(vars(self.arg))))
             self.global_step = self.arg.start_epoch * len(self.data_loader['train']) / self.arg.batch_size
             for epoch in range(self.arg.start_epoch, self.arg.num_epoch):
-                # if self.lr < 1e-4:
-                #     print("self.lr is too small: ", self.lr)
-                #     break
+                self.train_sampler.set_epoch(epoch)  # 利用 epoch shuffle 数据
                 self.train(epoch, save_model=True)
-
-                self.eval(
-                    epoch,
-                    save_score=self.arg.save_score,
-                    loader_name=['test'])
-
+                if epoch % self.arg.eval_interval == 0:
+                    self.eval(
+                        epoch,
+                        save_score=self.arg.save_score,
+                        loader_name=['test'])
             print('best accuracy: ', self.best_acc, ' model_name: ', self.arg.model_saved_name)
 
         elif self.arg.phase == 'test':
@@ -682,10 +690,11 @@ def sweep_train():
         os.mkdir(arg.work_dir)
     arg.timestamp = "{0:%Y%m%dT%H-%M-%S/}".format(datetime.now())
     current_work_dir = os.path.join(arg.work_dir, arg.model_saved_name, arg.timestamp)
-    os.makedirs(current_work_dir)
+    os.makedirs(current_work_dir, exist_ok=True)
     init_seed(0)
     arg.work_dir = current_work_dir
-    wandb_init(args=arg)
+    if dist.get_rank() == 0:
+        wandb_init(args=arg)
     processor = Processor(wandb.config)
     processor.start()
     wandb.finish()
@@ -739,13 +748,14 @@ if __name__ == '__main__':
         parser.set_defaults(**default_arg)
     arg = parser.parse_args()
     if not os.path.exists(arg.work_dir):
-        os.mkdir(arg.work_dir)
+        os.makedirs(arg.work_dir, exist_ok=True)
     arg.timestamp = "{0:%Y%m%dT%H-%M-%S/}".format(datetime.now())
     current_work_dir = os.path.join(arg.work_dir, arg.model_saved_name, arg.timestamp)
-    os.makedirs(current_work_dir)
+    os.makedirs(current_work_dir, exist_ok=True)
     init_seed(0)
     arg.work_dir = current_work_dir
-    wandb_init(args=arg)
+    if dist.get_rank() == 0:
+        wandb_init(args=arg)
     print("num_workers: ", arg.num_worker)
     processor = Processor(arg)
     processor.start()

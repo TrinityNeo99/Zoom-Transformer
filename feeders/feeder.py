@@ -1,3 +1,6 @@
+#  Copyright (c) 2024. IPCRC, Lab. Jiangnig Wei
+#  All rights reserved
+
 import numpy as np
 import pickle
 import torch
@@ -58,7 +61,6 @@ class Feeder(Dataset):
             self.label = self.label[0:100]
             self.data = self.data[0:100]
             self.sample_name = self.sample_name[0:100]
-        
 
     def get_mean_map(self):
         data = self.data
@@ -87,7 +89,12 @@ class Feeder(Dataset):
         rank = score.argsort()
         hit_top_k = [l in rank[i, -top_k:] for i, l in enumerate(self.label)]
         return sum(hit_top_k) * 1.0 / len(hit_top_k)
-    
+
+    def top_k(self, score, top_k, label):
+        rank = score.argsort()
+        hit_top_k = [l in rank[i, -top_k:] for i, l in enumerate(label)]
+        return sum(hit_top_k) * 1.0 / len(hit_top_k)
+
     def get_pred_label(self, score):
         rank = score.argsort()
         pred = rank[:, -1]
@@ -100,4 +107,3 @@ def import_class(name):
     for comp in components[1:]:
         mod = getattr(mod, comp)
     return mod
-

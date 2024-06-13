@@ -99,21 +99,11 @@ class unit_tcn_m(nn.Module):
 
 class my_simple_gcn_unit(nn.Module):
     def __init__(self, in_channels, out_channels, A, angular_channels=9, T=100, V=17):
-        super(my_simple_gcn_unit, self).__init__()
-        self.angular_channels = angular_channels
-        self.angular_embedding = nn.Parameter(torch.zeros(1, angular_channels, T, V))
-        self.feature_embedding = nn.Parameter(torch.zeros(1, in_channels))
-
+        super().__init__()
         self.A = Variable(torch.from_numpy(A.astype(np.float32)), requires_grad=False)
-        self.PA = nn.Parameter(torch.from_numpy(A.astype(np.float32)))
-        self.inter_channels = in_channels * 2  # 48
-        self.conv_1 = nn.Conv2d(in_channels, self.inter_channels, 1)
-        self.conv_2 = nn.Conv2d(self.inter_channels, self.inter_channels, 1)
-        self.conv_3 = nn.Conv2d(self.inter_channels, out_channels, 1)
         self.conv = nn.Conv2d(in_channels, out_channels, 1)
-        self.bn = nn.BatchNorm2d(out_channels)
-        self.soft = nn.Softmax(-2)
         self.relu = nn.ReLU()
+        self.bn = nn.BatchNorm2d(out_channels)
 
     def forward(self, x):
         # batchsize, channel, t, node_num
@@ -128,12 +118,6 @@ class my_simple_gcn_unit(nn.Module):
 
         A = self.A.cuda(x.get_device())  # A V*V
         support = torch.einsum('vu,nctu->nctv', A, x)  # N, C, T, V
-        # support = self.conv_1(support)
-        # support = self.relu(support)
-        # support = self.conv_2(support)
-        # support = self.relu(support)
-        # support = self.conv_3(support)
-        # support = self.relu(support)
         support = self.conv(x)
         support = self.relu(support)
         return self.bn(support)
@@ -204,8 +188,8 @@ class TCN_GCN_unit(nn.Module):
 
     def __init__(self, in_channels, out_channels, A, stride=1, residual=True):
         super(TCN_GCN_unit, self).__init__()
-        # self.gcn1 = unit_gcn(in_channels, out_channels, A)
-        self.gcn1 = my_simple_gcn_unit(in_channels, out_channels, A)
+        self.gcn1 = unit_gcn(in_channels, out_channels, A)
+        # self.gcn1 = my_simple_gcn_unit(in_channels, out_channels, A)
         self.tcn1 = unit_tcn_m(out_channels, out_channels, stride=stride)
         self.relu = nn.ReLU()
         if not residual:
@@ -228,8 +212,6 @@ class Residual(nn.Module):
         self.fn = fn
 
     def forward(self, x, **kwargs):
-        if torch.isnan(x).any():
-            print("in Residual: x han nan")
         return self.fn(x, **kwargs) + x
 
 
@@ -240,8 +222,6 @@ class LayerNormalize(nn.Module):
         self.fn = fn
 
     def forward(self, x, **kwargs):
-        if torch.isnan(x).any():
-            print("in LayerNormalize: x han nan")
         return self.fn(self.norm(x), **kwargs)
 
 
@@ -324,25 +304,6 @@ class Transformer(nn.Module):
         for attention, mlp in self.layers:
             ix = attention(x, mask=mask)  # go to attention
             mx = mlp(ix)  # go to MLP_Block
-            # print(mlp)
-            if torch.isnan(x).any():
-                print("x has nan")
-                print("x", x)
-                print("ix", ix)
-                print("mx", mx)
-                exit(-1)
-            if torch.isnan(ix).any():
-                print("ix has nan")
-                print("x", x)
-                print("ix", ix)
-                print("mx", mx)
-                exit(-1)
-            if torch.isnan(mx).any():
-                print("mx has nan")
-                print("x", x)
-                print("ix", ix)
-                print("mx", mx)
-                exit(-1)
         return mx
 
 
@@ -814,14 +775,16 @@ class Temporal_Spatial_Trans_unit(nn.Module):
     def __init__(self, in_channels, out_channels, spatial_heads=3, temporal_heads=3, stride=1, residual=True,
                  dropout=0.1, temporal_merge=False, expert_windows_size=[8, 8], num_frames=100, temporal_depth=2,
                  spatial_depth=1, expert_weights=[0.5, 0.5], isLearnable=False, channelDivide=False,
-                 spatial_mask=None, temporal_ape=False, use_zloss=0):
+                 spatial_mask=None, temporal_ape=False, use_zloss=0, spatial_mask_require_grad=True):
         super().__init__()
         if spatial_mask == None:
             self.spatial_mask = None
         else:
-            self.spatial_mask = nn.Parameter(spatial_mask)
+            self.spatial_mask = nn.Parameter(spatial_mask, requires_grad=spatial_mask_require_grad)
         self.S_trans = Transformer(dim=in_channels, depth=spatial_depth, heads=spatial_heads, mlp_dim=in_channels,
                                    dropout=dropout)
+        self.bn1 = nn.BatchNorm1d(in_channels)
+        bn_init(self.bn1, 1)
         self.channelDivide = channelDivide
         self.expert_weights_learnable = isLearnable
 
@@ -832,10 +795,11 @@ class Temporal_Spatial_Trans_unit(nn.Module):
         if not isLearnable:
             expert_weights = torch.tensor(expert_weights)
             self.register_buffer("expert_weights", expert_weights)
-        self.experts = nn.ModuleList()
         self.num_experts = len(expert_windows_size)
         self.temporal_merge = temporal_merge
         self.expert_linear = nn.Linear(in_channels, self.num_experts)
+        self.expert_softmax = nn.Softmax(dim=-1)
+        self.experts = nn.ModuleList()
         for i in range(self.num_experts):
             self.experts.append(
                 Temporal_unit(in_channels // self.num_experts if self.channelDivide else in_channels,
@@ -849,8 +813,6 @@ class Temporal_Spatial_Trans_unit(nn.Module):
         # TODO ape
         self.relu = nn.ReLU()
         self.drop = nn.Dropout(p=0.3)
-        self.bn1 = nn.BatchNorm1d(in_channels)
-        bn_init(self.bn1, 1)
         self.bn2 = nn.BatchNorm2d(out_channels)
         bn_init(self.bn2, 1)
         if not residual:
@@ -859,8 +821,6 @@ class Temporal_Spatial_Trans_unit(nn.Module):
             self.residual = TemporalWindowPatchMerging(in_channels)
         elif temporal_merge == False:
             self.residual = lambda x: x
-
-        self.expert_softmax = nn.Softmax(dim=-1)
         self.use_zloss = use_zloss
 
     def compute_zloss(self, logits):
@@ -992,8 +952,6 @@ class myZiT(nn.Module):
         super().__init__()
         self.data_bn = nn.BatchNorm1d(num_person * in_channels * num_point)
         bn_init(self.data_bn, 1)
-        self.data_bn2 = nn.BatchNorm2d(48)
-        bn_init(self.data_bn2, 1)
         self.num_frames = num_frame
         self.num_layers = len(block_structure)
         assert len(layer_temporal_depths) == len(block_structure), "not equal"
@@ -1009,6 +967,7 @@ class myZiT(nn.Module):
         self.layers = nn.ModuleList()
         assert embed_dim == block_structure[0][0], "the first embedding dimension is not equal"
         base_feature_dim = embed_dim
+        spatial_mask_fix_layer = [0, 1] if self.num_layers >= 5 else [0]
         for index, hyper_paras in enumerate(block_structure):
             assert hyper_paras[1] % hyper_paras[0] == 0, "not follow hierarchical structure" + str(hyper_paras)
             temporal_merge = False if hyper_paras[0] == hyper_paras[1] else True
@@ -1023,7 +982,8 @@ class myZiT(nn.Module):
                                                            spatial_mask=self.A if add_spatial_mask else None,
                                                            temporal_ape=temporal_ape,
                                                            temporal_depth=layer_temporal_depths[index],
-                                                           temporal_merge=temporal_merge))
+                                                           temporal_merge=temporal_merge,
+                                                           spatial_mask_require_grad=False if index in spatial_mask_fix_layer else True))
 
     def forward(self, x):
         N, C, T, V, M = x.size()

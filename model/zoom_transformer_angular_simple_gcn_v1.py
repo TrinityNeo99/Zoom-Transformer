@@ -202,8 +202,8 @@ class TCN_GCN_unit(nn.Module):
 
     def __init__(self, in_channels, out_channels, A, stride=1, residual=True):
         super(TCN_GCN_unit, self).__init__()
-        # self.gcn1 = unit_gcn(in_channels, out_channels, A)
-        self.gcn1 = my_simple_gcn_unit(in_channels, out_channels, A)
+        self.gcn1 = unit_gcn(in_channels, out_channels, A)
+        # self.gcn1 = my_simple_gcn_unit(in_channels, out_channels, A)
         self.tcn1 = unit_tcn_m(out_channels, out_channels, stride=stride)
         self.relu = nn.ReLU()
         if not residual:
@@ -286,7 +286,7 @@ class Attention(nn.Module):
 
         if mask is not None:
             assert mask.shape[-1] == dots.shape[-1], 'mask has incorrect dimensions'
-            # dots = (dots + mask) * 0.5
+            dots = (dots + mask) * 0.5
 
         attn = dots.softmax(dim=-1)  # follow the softmax,q,d,v equation in the paper
 
@@ -549,7 +549,7 @@ class ZoT(nn.Module):
 
 class Model(nn.Module):
     def __init__(self, num_class=15, in_channels=3, num_person=5, num_point=18, num_head=6, graph=None,
-                 graph_args=dict()):
+                 graph_args=dict(), num_frame=300):
         super(Model, self).__init__()
 
         self.body_transf = ZiT(in_channels=in_channels, num_person=num_person, num_point=num_point, num_head=num_head,

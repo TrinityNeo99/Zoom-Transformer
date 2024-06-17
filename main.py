@@ -204,6 +204,10 @@ def get_parser():
     parser.add_argument('--only_train_epoch', default=0)
     parser.add_argument('--warm_up_epoch', default=0)
     parser.add_argument('--dataset', default="p2a-14")
+    parser.add_argument(
+        '--optimizer-state',
+        default=None,
+        help='the optimizer state')
     return parser
 
 
@@ -301,6 +305,7 @@ class Processor():
             except:
                 state = self.model.state_dict()
                 diff = list(set(state.keys()).difference(set(weights.keys())))
+                self.print_log("WARNING: Can not find these weights:")
                 print('Can not find these weights:')
                 for d in diff:
                     print('  ' + d)
@@ -341,6 +346,10 @@ class Processor():
         self.lr_scheduler = GradualWarmupScheduler(self.optimizer, total_epoch=self.arg.warm_up_epoch,
                                                    after_scheduler=lr_scheduler_pre)
         self.print_log('using warm up, epoch: {}'.format(self.arg.warm_up_epoch))
+
+        if self.arg.optimizer_state:
+            self.optimizer.load_state_dict(torch.load(self.arg.optimizer_state))
+            self.print_log("optimizer state load successfully")
 
     def save_arg(self):
         # save arg
@@ -480,6 +489,8 @@ class Processor():
             weights = OrderedDict([[k.split('module.')[-1],
                                     v.cpu()] for k, v in state_dict.items()])
             torch.save(weights, os.path.join(self.arg.work_dir, self.arg.model_saved_name + '-' + str(epoch) + '.pt'))
+            torch.save(self.optimizer.state_dict(),
+                       os.path.join(self.arg.work_dir, self.arg.model_saved_name + '_optimizer-' + str(epoch) + '.pth'))
 
     def eval(self, epoch, save_score=False, loader_name=['test'], wrong_file=None, result_file=None):
         if wrong_file is not None:

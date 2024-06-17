@@ -11,6 +11,7 @@ import torch.nn.functional as F
 from model.angular_feature import Angular_feature
 from timm.models.layers import DropPath, to_2tuple, trunc_normal_
 import torch.utils.checkpoint as checkpoint
+import copy
 
 
 def import_class(name):
@@ -100,24 +101,19 @@ class unit_tcn_m(nn.Module):
 class my_simple_gcn_unit(nn.Module):
     def __init__(self, in_channels, out_channels, A, angular_channels=9, T=100, V=17):
         super().__init__()
-        self.A = Variable(torch.from_numpy(A.astype(np.float32)), requires_grad=False)
+        # self.A = Variable(torch.from_numpy(A.astype(np.float32)), requires_grad=False)
         self.conv = nn.Conv2d(in_channels, out_channels, 1)
         self.relu = nn.ReLU()
         self.bn = nn.BatchNorm2d(out_channels)
 
     def forward(self, x):
+        # we find that no A is equally successfully
+        '''
         # batchsize, channel, t, node_num
         N, C, T, V = x.size()
-
-        ## feature parameter embedding
-        # x = rearrange(x, 'n c t v  -> (n t v) c')
-        # x += self.feature_embedding
-        # x = rearrange(x, '(n t v) c -> n c t v', n=N, t=T, v=V)
-        # # embedding = x[:, (self.angular_channels + 1) * (-1): -1, :, :] + self.angular_embedding
-        # # x[:, (self.angular_channels + 1) * (-1): -1, :, :] = embedding
-
         A = self.A.cuda(x.get_device())  # A V*V
         support = torch.einsum('vu,nctu->nctv', A, x)  # N, C, T, V
+        '''
         support = self.conv(x)
         support = self.relu(support)
         return self.bn(support)
@@ -812,7 +808,7 @@ class Temporal_Spatial_Trans_unit(nn.Module):
 
         # TODO ape
         self.relu = nn.ReLU()
-        self.drop = nn.Dropout(p=0.3)
+        self.drop = nn.Dropout(p=0.3)  # TODO drop out org 0.3
         self.bn2 = nn.BatchNorm2d(out_channels)
         bn_init(self.bn2, 1)
         if not residual:
@@ -948,26 +944,36 @@ class myZiT(nn.Module):
                  num_frame=100, embed_dim=48, expert_windows_size=[8, 8], expert_weights=[0.5, 0.5],
                  isLearnable=False, channelDivide=False, add_spatial_mask=False, temporal_ape=False,
                  layer_temporal_depths=[2, 2, 2, 2, 2],
-                 block_structure=[[48, 48], [48, 96], [96, 96], [92, 192], [192, 192]], mergeSlow=False):
+                 block_structure_t=[[48, 48], [48, 96], [96, 96], [92, 192], [192, 192]], mergeSlow=False, scale=1):
         super().__init__()
+        block_structure = copy.deepcopy(block_structure_t)  # list[list]
         self.data_bn = nn.BatchNorm1d(num_person * in_channels * num_point)
         bn_init(self.data_bn, 1)
         self.num_frames = num_frame
         self.num_layers = len(block_structure)
         assert len(layer_temporal_depths) == len(block_structure), "not equal"
+        assert embed_dim == block_structure[0][
+            0], "the initial embedding dim is not equal to the  block_structure " + str(embed_dim) + " " + str(
+            block_structure[0][0]) + " " + str(block_structure)
+
         if graph is None:
             raise ValueError()
         else:
             Graph = import_class(graph)
             self.graph = Graph(**graph_args)
+        # scale dim
+        embed_dim *= scale
+        for i in range(self.num_layers):
+            block_structure[i][0] *= scale
+            block_structure[i][1] *= scale
 
         self.A = torch.from_numpy(self.graph.A[0].astype(np.float32))
         self.tcn_gcn = TCN_GCN_unit(in_channels, embed_dim, self.graph.A[0],
                                     residual=False)  # only contain A[0] (adjacency matrix)
         self.layers = nn.ModuleList()
-        assert embed_dim == block_structure[0][0], "the first embedding dimension is not equal"
         base_feature_dim = embed_dim
         spatial_mask_fix_layer = [0, 1] if self.num_layers >= 5 else [0]
+        # spatial_mask_fix_layer = []
         for index, hyper_paras in enumerate(block_structure):
             assert hyper_paras[1] % hyper_paras[0] == 0, "not follow hierarchical structure" + str(hyper_paras)
             temporal_merge = False if hyper_paras[0] == hyper_paras[1] else True
@@ -1035,12 +1041,12 @@ class ZoT(nn.Module):
 
 
 class simpleZoT(nn.Module):
-    def __init__(self, num_class=15, num_head=6):
+    def __init__(self, num_class=15, num_head=6, scale=1):
         super().__init__()
         self.heads = num_head
-        self.l1 = TCN_STRANSF_unit(192, 276, heads=num_head)  # 192 276
-        self.l2 = TCN_STRANSF_unit(276, 276, heads=num_head)
-        self.fc = nn.Linear(276, num_class)
+        self.l1 = TCN_STRANSF_unit(192 * scale, 276 * scale, heads=num_head)  # 192 276
+        self.l2 = TCN_STRANSF_unit(276 * scale, 276 * scale, heads=num_head)
+        self.fc = nn.Linear(276 * scale, num_class)
         nn.init.normal_(self.fc.weight, 0, math.sqrt(2. / num_class))
 
     def forward(self, x):
@@ -1094,7 +1100,7 @@ class Model(nn.Module):
                  ZiTstrct=[[48, 96], [96, 192], [192, 192]], ZiT_layer_temporal_depths=[2, 2, 2, 2, 2], ZoTType="org",
                  ZoTTstrct=[[192, 192]], ZoT_layer_temporal_depths=[2], ZoT_spatial_depth=1,
                  addMotion=False, channelDivide=False, onlyXYZ=False, angularType="p2a",
-                 addSpatialMask=False, temporalApe=False, mergeSlow=False,
+                 addSpatialMask=False, temporalApe=False, mergeSlow=False, init_embed_dim=48, dim_scale=1
                  ):
         super(Model, self).__init__()
         if in_channels == 3:
@@ -1110,11 +1116,12 @@ class Model(nn.Module):
                                  expert_weights=expert_weights, isLearnable=expert_weights_learnable,
                                  channelDivide=channelDivide, add_spatial_mask=addSpatialMask,
                                  temporal_ape=temporalApe, layer_temporal_depths=ZiT_layer_temporal_depths,
-                                 block_structure=ZiTstrct, embed_dim=48, mergeSlow=mergeSlow)
+                                 block_structure_t=ZiTstrct, embed_dim=init_embed_dim, mergeSlow=mergeSlow,
+                                 scale=dim_scale)
         if ZoTType == "direct":
             pass
         elif ZoTType == "org":
-            self.group_transf = simpleZoT(num_class=num_class)
+            self.group_transf = simpleZoT(num_class=num_class, scale=dim_scale)
         elif ZoTType == "transformer":
             self.group_transf = ZoTTransformer(num_class=num_class, spatial_heads=s_num_head, temporal_heads=t_num_head,
                                                num_frame=num_frame, expert_windows_size=t_expert_windows_size,

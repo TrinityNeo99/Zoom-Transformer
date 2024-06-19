@@ -182,10 +182,12 @@ class unit_gcn(nn.Module):
 
 class TCN_GCN_unit(nn.Module):
 
-    def __init__(self, in_channels, out_channels, A, stride=1, residual=True):
+    def __init__(self, in_channels, out_channels, A, stride=1, residual=True, ConvTCN_emb=False):
         super(TCN_GCN_unit, self).__init__()
-        self.gcn1 = unit_gcn(in_channels, out_channels, A)
-        # self.gcn1 = my_simple_gcn_unit(in_channels, out_channels, A)
+        if ConvTCN_emb == False:
+            self.gcn1 = unit_gcn(in_channels, out_channels, A)
+        else:
+            self.gcn1 = my_simple_gcn_unit(in_channels, out_channels, A)
         self.tcn1 = unit_tcn_m(out_channels, out_channels, stride=stride)
         self.relu = nn.ReLU()
         if not residual:
@@ -944,7 +946,8 @@ class myZiT(nn.Module):
                  num_frame=100, embed_dim=48, expert_windows_size=[8, 8], expert_weights=[0.5, 0.5],
                  isLearnable=False, channelDivide=False, add_spatial_mask=False, temporal_ape=False,
                  layer_temporal_depths=[2, 2, 2, 2, 2],
-                 block_structure_t=[[48, 48], [48, 96], [96, 96], [92, 192], [192, 192]], mergeSlow=False, scale=1):
+                 block_structure_t=[[48, 48], [48, 96], [96, 96], [92, 192], [192, 192]], mergeSlow=False, scale=1,
+                 ConvTCN_emb=False):
         super().__init__()
         block_structure = copy.deepcopy(block_structure_t)  # list[list]
         self.data_bn = nn.BatchNorm1d(num_person * in_channels * num_point)
@@ -969,7 +972,7 @@ class myZiT(nn.Module):
 
         self.A = torch.from_numpy(self.graph.A[0].astype(np.float32))
         self.tcn_gcn = TCN_GCN_unit(in_channels, embed_dim, self.graph.A[0],
-                                    residual=False)  # only contain A[0] (adjacency matrix)
+                                    residual=False, ConvTCN_emb=ConvTCN_emb)  # only contain A[0] (adjacency matrix)
         self.layers = nn.ModuleList()
         base_feature_dim = embed_dim
         spatial_mask_fix_layer = [0, 1] if self.num_layers >= 5 else [0]
@@ -1100,7 +1103,8 @@ class Model(nn.Module):
                  ZiTstrct=[[48, 96], [96, 192], [192, 192]], ZiT_layer_temporal_depths=[2, 2, 2, 2, 2], ZoTType="org",
                  ZoTTstrct=[[192, 192]], ZoT_layer_temporal_depths=[2], ZoT_spatial_depth=1,
                  addMotion=False, channelDivide=False, onlyXYZ=False, angularType="p2a",
-                 addSpatialMask=False, temporalApe=False, mergeSlow=False, init_embed_dim=48, dim_scale=1
+                 addSpatialMask=False, temporalApe=False, mergeSlow=False, init_embed_dim=48, dim_scale=1,
+                 ConvTCN_emb=False
                  ):
         super(Model, self).__init__()
         if in_channels == 3:
@@ -1117,7 +1121,7 @@ class Model(nn.Module):
                                  channelDivide=channelDivide, add_spatial_mask=addSpatialMask,
                                  temporal_ape=temporalApe, layer_temporal_depths=ZiT_layer_temporal_depths,
                                  block_structure_t=ZiTstrct, embed_dim=init_embed_dim, mergeSlow=mergeSlow,
-                                 scale=dim_scale)
+                                 scale=dim_scale, ConvTCN_emb=ConvTCN_emb)
         if ZoTType == "direct":
             pass
         elif ZoTType == "org":

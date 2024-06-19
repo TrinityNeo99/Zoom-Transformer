@@ -555,7 +555,7 @@ class Processor():
 
             for k in self.arg.show_topk:
                 self.print_log('\tTop{}: {:.2f}%'.format(
-                    k, 100 * self.data_loader[ln].dataset.top_k(scores, 1, labels)))
+                    k, 100 * self.data_loader[ln].dataset.top_k(scores, k, labels)))
 
             if save_score:
                 with open('{}/epoch{}_{}_score.pkl'.format(

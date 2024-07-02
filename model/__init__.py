@@ -10,3 +10,4 @@ from . import discrete_joint
 from . import zoom_transformer_ntu_agl
 from . import temporal_expert_transformer
 from . import MoE_temporal_expert_transformer
+from . import temporal_expert_transformer_slim

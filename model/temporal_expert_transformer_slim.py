@@ -604,9 +604,6 @@ class Temporal_unit(nn.Module):
             self.absolute_pos_embed = nn.Parameter(torch.zeros(1, num_frames, in_channels))
             trunc_normal_(self.absolute_pos_embed, std=.02)
 
-        # stochastic depth
-        dpr = [x.item() for x in torch.linspace(0, drop_path_rate, depth)]  # stochastic depth decay rule
-
         self.trans = TemporalWindowTransformerLayer(
             dim=in_channels,
             num_frames=num_frames,
@@ -615,7 +612,7 @@ class Temporal_unit(nn.Module):
             window_size=window_size,
             qkv_bias=qkv_bias, qk_scale=qk_scale,
             drop=drop_rate, attn_drop=attn_drop_rate,
-            drop_path=dpr,
+            # drop_path=dpr[sum(depths[:i_layer]):sum(depths[:i_layer + 1])],
             norm_layer=norm_layer,
             downsample=TemporalWindowPatchMerging if temporal_merge else None,
             use_checkpoint=use_checkpoint
@@ -681,97 +678,6 @@ class TemporalWindowPatchMerging(nn.Module):
         return x
 
 
-class MoE_Temporal_Spatial_Trans_unit(nn.Module):
-    def __int__(self, in_channels, out_channels, spatial_heads=3, temporal_heads=3, residual=True, dropout=0.1,
-                temporal_merge=False, t_expert_receptive_field=[4, 8, 16, 32], num_frames=100,
-                t_expert_depth=[2, 2, 2, 2],
-                spatial_depth=1, topk=1, temporal_part_size=32, use_zloss=1):
-        assert len(t_expert_receptive_field) == len(
-            t_expert_depth), "the num of expert fields and expert_depth is not equal"
-        assert num_frames % temporal_part_size == 0, "the num_frames can not be divided by temporal_part_size"
-        self.num_expert = len(t_expert_receptive_field)
-        self.t_experts = nn.ModuleList()
-        self.num_parts = num_frames // temporal_part_size
-        self.w_gate = nn.Parameter(torch.zeros(in_channels, self.num_expert), requires_grad=True)
-        self.k = topk
-        self.temporal_part_size = temporal_part_size
-        self.use_zloss = use_zloss
-        for i in range(self.num_experts):
-            self.t_experts.append(
-                Temporal_unit(in_channels,
-                              out_channels,
-                              residual=residual,
-                              heads=temporal_heads,
-                              temporal_merge=temporal_merge, window_size=t_expert_receptive_field[i],
-                              num_frames=temporal_part_size,
-                              ape=False, depth=t_expert_depth[i]))
-        self.S_trans = Transformer(dim=in_channels, depth=spatial_depth, heads=spatial_heads, mlp_dim=in_channels,
-                                   dropout=dropout)
-        self.temporal_merge = temporal_merge
-        self.relu = nn.ReLU()
-        self.drop = nn.Dropout(p=0.3)
-        self.bn1 = nn.BatchNorm1d(in_channels)
-        bn_init(self.bn1, 1)
-        self.bn2 = nn.BatchNorm2d(out_channels)
-        bn_init(self.bn2, 1)
-        if not residual:
-            self.residual = lambda x: 0
-        elif temporal_merge == True:
-            self.residual = TemporalWindowPatchMerging(in_channels)
-        elif temporal_merge == False:
-            self.residual = lambda x: x
-
-    def forward(self, x):
-        B, C, T, V = x.size()
-        rx = rearrange(x, "b c t v -> (b v) t c")
-        sx = x.permute(0, 2, 3, 1).contiguous().view(B * T, V, C)
-        sx = self.S_trans(sx)
-        sx = rearrange(sx, "(b t) v c -> (b v) c t", t=T, v=V)
-        sx = self.bn1(sx)
-        tx = rearrange(sx, "(b v) c t -> (b v t) c", t=T, v=V)
-        output = []
-        logits = []
-        for i in range(self.num_parts):
-            ss = B * V * i * self.temporal_part_size
-            tt = B * V * (i + 1) * self.temporal_part_size
-            expert_input = tx[ss:tt, :]
-            topk_experts, part_logits = self.topk_gate(expert_input)
-            if self.temporal_merge:
-                expert_output = torch.zeros((B * T * V // 2, C * 2))
-            else:
-                expert_output = torch.zeros((B * T * V, C))
-            for e in topk_experts:
-                expert_input = rearrange(expert_input, "(b v t) c -> (b v) t c", t=T, v=V)
-                expert_output += self.t_experts[e](expert_input)
-            output.append(expert_output)
-            logits.append(part_logits)
-        logits = torch.cat(logits, dim=0)
-        zloss = self.use_zloss * self.compute_zloss(logits)
-        atx = torch.cat(output, dim=0)
-        stx = rearrange(atx, "(b v) t c -> b c t v", v=V)
-        stx = self.bn2(stx)
-        stx = self.drop(stx)
-        rx = self.residual(rx)
-        rx = rearrange(rx, "(b v) t c -> b c t v", v=V)
-        stx = stx + rx
-        return self.relu(stx), zloss
-
-    def topk_gate(self, x):
-        logits = x * self.w_gate
-        logits = logits.mean(0)
-        probs = torch.softmax(logits, dim=1)
-        top_k_gates, top_k_indices = probs.topk(self.k, dim=1)
-        top_k_gates = top_k_gates.flatten()
-        top_k_experts = top_k_indices.flatten()
-        nonzeros = top_k_gates.nonzero().squeeze(-1)
-        top_k_experts_nonzero = top_k_experts[nonzeros]
-        return top_k_experts_nonzero, logits
-
-    def compute_zloss(self, logits):
-        zloss = torch.mean(torch.log(torch.exp(logits).sum(dim=1)) ** 2)
-        return zloss
-
-
 class Temporal_Spatial_Trans_unit(nn.Module):
     def __init__(self, in_channels, out_channels, spatial_heads=3, temporal_heads=3, stride=1, residual=True,
                  dropout=0.1, temporal_merge=False, expert_windows_size=[8, 8], num_frames=100, temporal_depth=2,
@@ -823,10 +729,6 @@ class Temporal_Spatial_Trans_unit(nn.Module):
         elif temporal_merge == False:
             self.residual = lambda x: x
         self.use_zloss = use_zloss
-
-    def compute_zloss(self, logits):
-        zloss = torch.mean(torch.log(torch.exp(logits).sum(dim=1)) ** 2)
-        return zloss
 
     def forward(self, x):
         B, C, T, V = x.size()
@@ -897,50 +799,6 @@ class Temporal_Spatial_Trans_unit(nn.Module):
         for i in range(self.num_experts):
             atx[:, :, i::self.num_experts] = expert_weights[i] * self.experts[i](x[:, :, i::self.num_experts])
         return atx
-
-
-class ZiT(nn.Module):
-    def __init__(self, in_channels=3, num_person=5, num_point=18, num_head=6, graph=None, graph_args=dict(),
-                 num_frame=100, embed_dim=48, depths=[2, 2, 2], expert_windows_size=[8, 8], expert_weights=[0.5, 0.5]):
-        super(ZiT, self).__init__()
-        self.data_bn = nn.BatchNorm1d(num_person * in_channels * num_point)
-        bn_init(self.data_bn, 1)
-        self.heads = num_head
-
-        if graph is None:
-            raise ValueError()
-        else:
-            Graph = import_class(graph)
-            self.graph = Graph(**graph_args)
-
-        self.A = torch.from_numpy(self.graph.A[0].astype(np.float32))
-        self.l1 = TCN_GCN_unit(in_channels, 48, self.graph.A[0], residual=False)  # only contain A[0] (adjacency matrix)
-        self.l2 = TCN_STRANSF_unit(48, 48, heads=num_head, mask=self.A, mask_grad=False)
-        self.l3 = TCN_STRANSF_unit(48, 48, heads=num_head, mask=self.A, mask_grad=False)
-        self.l4 = TCN_STRANSF_unit(48, 96, heads=num_head, stride=2, mask=self.A, mask_grad=True)
-        self.l5 = TCN_STRANSF_unit(96, 96, heads=num_head, mask=self.A, mask_grad=True)
-        self.l6 = TCN_STRANSF_unit(96, 192, heads=num_head, stride=2, mask=self.A, mask_grad=True)
-        self.l7 = TCN_STRANSF_unit(192, 192, heads=num_head, mask=self.A, mask_grad=True)
-
-    def forward(self, x):
-        N, C, T, V, M = x.size()
-        x = x.permute(0, 4, 3, 1, 2).contiguous().view(N, M * V * C, T)
-        x = self.data_bn(x)
-        x = x.view(N, M, V, C, T).permute(0, 1, 3, 4, 2).contiguous().view(N * M, C, T, V)  # 这样就达到了共享参数的目的
-
-        x = self.l1(x)
-        x = self.l2(x)
-        x = self.l3(x)
-        x = self.l4(x)
-        x = self.l5(x)
-        x = self.l6(x)
-        x = self.l7(x)
-
-        B, C_, T_, V_ = x.size()
-        x = x.view(N, M, C_, T_, V_).mean(4)
-        x = x.permute(0, 2, 3, 1).contiguous()
-
-        return x
 
 
 class myZiT(nn.Module):
@@ -1050,9 +908,9 @@ class simpleZoT(nn.Module):
     def __init__(self, num_class=15, num_head=6, scale=1):
         super().__init__()
         self.heads = num_head
-        self.l1 = TCN_STRANSF_unit(192 * scale, 276 * scale, heads=num_head)  # 192 276
-        self.l2 = TCN_STRANSF_unit(276 * scale, 276 * scale, heads=num_head)
-        self.fc = nn.Linear(276 * scale, num_class)
+        self.l1 = TCN_STRANSF_unit(96 * scale, 138 * scale, heads=num_head)  # 192 276
+        self.l2 = TCN_STRANSF_unit(138 * scale, 138 * scale, heads=num_head)
+        self.fc = nn.Linear(138 * scale, num_class)
         nn.init.normal_(self.fc.weight, 0, math.sqrt(2. / num_class))
 
     def forward(self, x):
@@ -1098,6 +956,17 @@ class ZoTTransformer(nn.Module):
         return self.fc(x)
 
 
+class Direct(nn.Module):
+    def __init__(self, in_channels, num_class):
+        super().__init__()
+        self.fc = nn.Linear(in_channels, num_class)
+
+    def forward(self, x):
+        # N,C,T,M
+        x = x.mean(3).mean(2)
+        return self.fc(x)
+
+
 class Model(nn.Module):
     def __init__(self, num_class=15, in_channels=3, num_person=5, num_point=18, num_frame=128, s_num_head=6, graph=None,
                  graph_args=dict(),
@@ -1126,7 +995,7 @@ class Model(nn.Module):
                                  block_structure_t=ZiTstrct, embed_dim=init_embed_dim, mergeSlow=mergeSlow,
                                  scale=dim_scale, ConvTCN_emb=ConvTCN_emb)
         if ZoTType == "direct":
-            pass
+            self.group_transf = Direct(num_class=num_class, in_channels=192)
         elif ZoTType == "org":
             self.group_transf = simpleZoT(num_class=num_class, scale=dim_scale)
         elif ZoTType == "transformer":

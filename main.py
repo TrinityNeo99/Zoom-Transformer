@@ -34,7 +34,7 @@ sys.path.append("../")
 from Evaluate.evaluate import generate_confusion_matrix
 
 # from torch.profiler import profile, record_function, ProfilerActivity
-torch.set_num_threads(2)
+torch.set_num_threads(4)
 
 
 # from thop import clever_format
@@ -440,14 +440,17 @@ class Processor():
             else:
                 aux_loss = 0
             loss = self.loss(output, label) + aux_loss
-
             # backward
             self.optimizer.zero_grad()
             loss.backward()
-            for name, param in self.model.named_parameters():
-                if param.grad is None:
-                    print(name)
             self.optimizer.step()
+
+            checkUnusedModel = False
+            if checkUnusedModel:
+                for name, param in self.model.named_parameters():
+                    if param.grad is None:
+                        print(name)
+
             loss_value.append(loss.data.item())
             # wandb.log({"train_zloss": zloss.mean()})
             # wandb.log({"train_step_loss": loss})
@@ -537,8 +540,8 @@ class Processor():
                             f_w.write(str(index[i]) + ',' + str(x) + ',' + str(true[i]) + '\n')
             score = np.concatenate(score_frag)
             loss = np.mean(loss_value)
-            accuracy = self.data_loader[ln].dataset.top_k(score, 1)
-            accuracy_top5 = self.data_loader[ln].dataset.top_k(score, 5)
+            accuracy = self.data_loader[ln].dataset.top_k_(score, 1)
+            accuracy_top5 = self.data_loader[ln].dataset.top_k_(score, 5)
             if self.arg.dataset is not None:
                 dataset = self.arg.dataset
             if accuracy > self.best_acc:
@@ -561,8 +564,8 @@ class Processor():
                 ln, len(self.data_loader[ln]), np.mean(loss_value)))
             for k in self.arg.show_topk:
                 self.print_log('\tTop{}: {:.2f}%'.format(
-                    k, 100 * self.data_loader[ln].dataset.top_k(score, k)))
-                wandb.log({f"eval_acc_top_{k}": 100 * self.data_loader[ln].dataset.top_k(score, k), "epoch": epoch})
+                    k, 100 * self.data_loader[ln].dataset.top_k_(score, k)))
+                wandb.log({f"eval_acc_top_{k}": 100 * self.data_loader[ln].dataset.top_k_(score, k), "epoch": epoch})
 
             if save_score:
                 with open('{}/epoch{}_{}_score.pkl'.format(

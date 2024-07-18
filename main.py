@@ -697,8 +697,9 @@ def sweep_train():
     arg.timestamp = "{0:%Y%m%dT%H-%M-%S/}".format(datetime.now())
     current_work_dir = os.path.join(arg.work_dir, arg.model_saved_name, arg.timestamp)
     os.makedirs(current_work_dir)
-    init_seed(0)
     arg.work_dir = current_work_dir
+    init_seed(0)
+
     wandb_init(args=arg)
     processor = Processor(wandb.config)
     processor.start()
